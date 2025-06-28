@@ -27,6 +27,12 @@ extension QueryFragmentBuilder<Bool> {
   ) -> [QueryFragment] {
     [expression.queryFragment]
   }
+
+  public static func buildExpression(
+    _ expression: some QueryExpression<some _OptionalPromotable<Bool?>>
+  ) -> [QueryFragment] {
+    [expression.queryFragment]
+  }
 }
 
 extension QueryFragmentBuilder<()> {
@@ -34,5 +40,20 @@ extension QueryFragmentBuilder<()> {
     _ expression: (repeat each C)
   ) -> [QueryFragment] {
     Array(repeat each expression)
+  }
+}
+
+extension QueryFragmentBuilder<any Statement> {
+  public static func buildExpression(
+    _ expression: some Statement
+  ) -> [QueryFragment] {
+    [expression.query]
+  }
+
+  public static func buildBlock(
+    _ first: [QueryFragment],
+    _ rest: [QueryFragment]...
+  ) -> [QueryFragment] {
+    first + rest.flatMap(\.self)
   }
 }

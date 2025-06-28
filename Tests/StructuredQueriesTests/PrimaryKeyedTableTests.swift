@@ -1,10 +1,14 @@
+import Dependencies
 import Foundation
 import InlineSnapshotTesting
 import StructuredQueries
+import StructuredQueriesSQLite
 import Testing
 
 extension SnapshotTests {
   struct PrimaryKeyedTableTests {
+    @Dependency(\.defaultDatabase) var database
+
     @Test func count() {
       assertQuery(Reminder.select { $0.count() }) {
         """
@@ -112,7 +116,39 @@ extension SnapshotTests {
       }
 
       assertQuery(
+        Reminder.Draft.find(1).select { ($0.id, $0.title) }
+      ) {
+        """
+        SELECT "reminders"."id", "reminders"."title"
+        FROM "reminders"
+        WHERE ("reminders"."id" = 1)
+        """
+      } results: {
+        """
+        ┌───┬─────────────┐
+        │ 1 │ "Groceries" │
+        └───┴─────────────┘
+        """
+      }
+
+      assertQuery(
         Reminder.select { ($0.id, $0.title) }.find(2)
+      ) {
+        """
+        SELECT "reminders"."id", "reminders"."title"
+        FROM "reminders"
+        WHERE ("reminders"."id" = 2)
+        """
+      } results: {
+        """
+        ┌───┬───────────┐
+        │ 2 │ "Haircut" │
+        └───┴───────────┘
+        """
+      }
+
+      assertQuery(
+        Reminder.Draft.select { ($0.id, $0.title) }.find(2)
       ) {
         """
         SELECT "reminders"."id", "reminders"."title"
@@ -150,9 +186,40 @@ extension SnapshotTests {
       }
     }
 
+    @Test func uuid() throws {
+      try database.execute(
+        #sql(
+          """
+          CREATE TABLE "rows" (id TEXT PRIMARY KEY NOT NULL)
+          """
+        )
+      )
+      try database.execute(Row.insert { Row(id: UUID(1)) })
+      assertQuery(
+        Row.find(UUID(1))
+      ) {
+        """
+        SELECT "rows"."id"
+        FROM "rows"
+        WHERE ("rows"."id" = '00000000-0000-0000-0000-000000000001')
+        """
+      } results: {
+        """
+        ┌─────────────────────────────────────────────────────┐
+        │ Row(id: UUID(00000000-0000-0000-0000-000000000001)) │
+        └─────────────────────────────────────────────────────┘
+        """
+      }
+    }
+
     @Test func joinWith() {
-      //RemindersList.join(Reminder.all, with: \.remindersListID)
-      //Reminder.join(RemindersList.all, with: \.remindersListID)
+      // RemindersList.join(Reminder.all, with: \.remindersListID)
+      // Reminder.join(RemindersList.all, with: \.remindersListID)
     }
   }
+}
+
+@Table
+private struct Row {
+  let id: UUID
 }

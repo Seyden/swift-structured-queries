@@ -16,7 +16,7 @@ extension QueryExpression {
   }
 }
 
-extension QueryExpression where QueryValue: Codable & Sendable & QueryBindable {
+extension QueryExpression where QueryValue: Codable & QueryBindable & Sendable {
   /// A JSON array aggregate of this expression
   ///
   /// Concatenates all of the values in a group.
@@ -27,14 +27,22 @@ extension QueryExpression where QueryValue: Codable & Sendable & QueryBindable {
   /// ```
   ///
   /// - Parameters:
+  ///   - isDistinct: An boolean to enable the `DISTINCT` clause to apply to the aggregation.
   ///   - order: An `ORDER BY` clause to apply to the aggregation.
   ///   - filter: A `FILTER` clause to apply to the aggregation.
   /// - Returns: A JSON array aggregate of this expression.
   public func jsonGroupArray(
+    isDistinct: Bool = false,
     order: (some QueryExpression)? = Bool?.none,
     filter: (some QueryExpression<Bool>)? = Bool?.none
   ) -> some QueryExpression<[QueryValue].JSONRepresentation> {
-    AggregateFunction("json_group_array", self, order: order, filter: filter)
+    AggregateFunction(
+      "json_group_array",
+      isDistinct: isDistinct,
+      [queryFragment],
+      order: order?.queryFragment,
+      filter: filter?.queryFragment
+    )
   }
 }
 
@@ -85,17 +93,98 @@ extension PrimaryKeyedTableDefinition where QueryValue: Codable & Sendable {
   /// }
   ///
   /// - Parameters:
+  ///   - isDistinct: An boolean to enable the `DISTINCT` clause to apply to the aggregation.
   ///   - order: An `ORDER BY` clause to apply to the aggregation.
   ///   - filter: A `FILTER` clause to apply to the aggregation.
   /// - Returns: A JSON array aggregate of this table.
   public func jsonGroupArray(
+    isDistinct: Bool = false,
     order: (some QueryExpression)? = Bool?.none,
     filter: (some QueryExpression<Bool>)? = Bool?.none
   ) -> some QueryExpression<[QueryValue].JSONRepresentation> {
-    AggregateFunction("json_group_array", jsonObject, order: order, filter: filter)
+    AggregateFunction(
+      "json_group_array",
+      isDistinct: isDistinct,
+      [jsonObject.queryFragment],
+      order: order?.queryFragment,
+      filter: filter?.queryFragment
+    )
+  }
+}
+
+extension PrimaryKeyedTableDefinition {
+  /// A JSON array representation of the aggregation of a table's columns.
+  ///
+  /// Constructs a JSON array of JSON objects with a field for each column of the table. This can be
+  /// useful for loading many associated values in a single query. For example, to query for every
+  /// reminders list, along with the array of reminders it is associated with, one can define a
+  /// custom `@Selection` for that data and query as follows:
+  ///
+  /// @Row {
+  ///   @Column {
+  ///     ```swift
+  ///     @Selection struct Row {
+  ///       let remindersList: RemindersList
+  ///       @Column(as: JSONRepresentation<[Reminder]>.self)
+  ///       let reminders: [Reminder]
+  ///     }
+  ///     RemindersList
+  ///       .leftJoin(Reminder.all) { $0.id.eq($1.remindersListID) }
+  ///       .select {
+  ///         Row.Columns(
+  ///           remindersList: $0,
+  ///           reminders: $1.jsonGroupArray()
+  ///         )
+  ///       }
+  ///     ```
+  ///   }
+  ///   @Column {
+  ///     ```sql
+  ///      SELECT
+  ///       "remindersLists".…,
+  ///       iif(
+  ///         "reminders"."id" IS NULL,
+  ///         NULL,
+  ///         json_object(
+  ///           'id', json_quote("id"),
+  ///           'title', json_quote("title"),
+  ///           'priority', json_quote("priority")
+  ///         )
+  ///       )
+  ///     FROM "remindersLists"
+  ///     JOIN "reminders"
+  ///       ON ("remindersLists"."id" = "reminders"."remindersListID")
+  ///     ```
+  ///   }
+  /// }
+  ///
+  /// - Parameters:
+  ///   - isDistinct: An boolean to enable the `DISTINCT` clause to apply to the aggregation.
+  ///   - order: An `ORDER BY` clause to apply to the aggregation.
+  ///   - filter: A `FILTER` clause to apply to the aggregation.
+  /// - Returns: A JSON array aggregate of this table.
+  public func jsonGroupArray<Wrapped: Codable & Sendable>(
+    isDistinct: Bool = false,
+    order: (some QueryExpression)? = Bool?.none,
+    filter: (some QueryExpression<Bool>)? = Bool?.none
+  ) -> some QueryExpression<[Wrapped].JSONRepresentation>
+  where QueryValue == Wrapped? {
+    let filterQueryFragment =
+      if let filter {
+        self.primaryKey.isNot(nil).and(filter).queryFragment
+      } else {
+        self.primaryKey.isNot(nil).queryFragment
+      }
+    return AggregateFunction(
+      "json_group_array",
+      isDistinct: isDistinct,
+      [jsonObject.queryFragment],
+      order: order?.queryFragment,
+      filter: filterQueryFragment
+    )
   }
 
-  private var jsonObject: some QueryExpression<QueryValue> {
+  fileprivate var jsonObject: some QueryExpression<QueryValue> {
     func open<TableColumn: TableColumnExpression>(_ column: TableColumn) -> QueryFragment {
       typealias Value = TableColumn.QueryValue._Optionalized.Wrapped
 

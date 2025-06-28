@@ -34,7 +34,8 @@ extension TableMacro: ExtensionMacro {
     var diagnostics: [Diagnostic] = []
 
     // NB: A compiler bug prevents us from applying the '@_Draft' macro directly
-    var draftBindings: [(PatternBindingSyntax, queryOutputType: TypeSyntax?)] = []
+    var draftBindings: [(PatternBindingSyntax, queryOutputType: TypeSyntax?, optionalize: Bool)] =
+      []
     // NB: End of workaround
 
     var draftProperties: [DeclSyntax] = []
@@ -49,32 +50,56 @@ extension TableMacro: ExtensionMacro {
     let selfRewriter = SelfRewriter(
       selfEquivalent: type.as(IdentifierTypeSyntax.self)?.name ?? "QueryValue"
     )
-    let tableName: ExprSyntax
-    if case let .argumentList(arguments) = node.arguments,
-      let expression = arguments.first?.expression
-    {
-      if node.attributeName.identifier == "_Draft" {
-        let memberAccess = expression.cast(MemberAccessExprSyntax.self)
-        let base = memberAccess.base!
-        draftTableType = TypeSyntax("\(base)")
-        tableName = "\(base).tableName"
-      } else {
-        if !expression.isNonEmptyStringLiteral {
-          diagnostics.append(
-            Diagnostic(
-              node: expression,
-              message: MacroExpansionErrorMessage("Argument must be a non-empty string literal")
-            )
-          )
-        }
-        tableName = expression.trimmed
-      }
-    } else {
-      tableName = ExprSyntax(
-        StringLiteralExprSyntax(
-          content: declaration.name.trimmed.text.lowerCamelCased().pluralized()
-        )
+    var schemaName: ExprSyntax?
+    var tableName = ExprSyntax(
+      StringLiteralExprSyntax(
+        content: declaration.name.trimmed.text.lowerCamelCased().pluralized()
       )
+    )
+    if case .argumentList(let arguments) = node.arguments {
+      for argumentIndex in arguments.indices {
+        let argument = arguments[argumentIndex]
+        switch argument.label {
+        case nil:
+          if node.attributeName.identifier == "_Draft" {
+            let memberAccess = argument.expression.cast(MemberAccessExprSyntax.self)
+            let base = memberAccess.base!.trimmed
+            draftTableType = TypeSyntax("\(base)")
+            tableName = "\(base).tableName"
+          } else {
+            if !argument.expression.isNonEmptyStringLiteral {
+              diagnostics.append(
+                Diagnostic(
+                  node: argument.expression,
+                  message: MacroExpansionErrorMessage("Argument must be a non-empty string literal")
+                )
+              )
+            }
+            tableName = argument.expression.trimmed
+          }
+
+        case .some(let label) where label.text == "schema":
+          if node.attributeName.identifier == "_Draft" {
+            let memberAccess = argument.expression.cast(MemberAccessExprSyntax.self)
+            let base = memberAccess.base!.trimmed
+            draftTableType = TypeSyntax("\(base)")
+            schemaName = "\(base).schemaName"
+          } else {
+            if !argument.expression.isNonEmptyStringLiteral {
+              diagnostics.append(
+                Diagnostic(
+                  node: argument.expression,
+                  message: MacroExpansionErrorMessage("Argument must be a non-empty string literal")
+                )
+              )
+            }
+            schemaName = argument.expression.trimmed
+          }
+
+        case let argument?:
+          fatalError("Unexpected argument: \(argument)")
+        }
+      }
     }
     for member in declaration.memberBlock.members {
       guard
@@ -105,7 +130,7 @@ extension TableMacro: ExtensionMacro {
         isEphemeral = isEphemeral || attributeName == "Ephemeral"
         guard
           attributeName == "Column" || isEphemeral,
-          case let .argumentList(arguments) = attribute.arguments
+          case .argumentList(let arguments) = attribute.arguments
         else { continue }
 
         for argumentIndex in arguments.indices {
@@ -123,7 +148,7 @@ extension TableMacro: ExtensionMacro {
             }
             columnName = argument.expression
 
-          case let .some(label) where label.text == "as":
+          case .some(let label) where label.text == "as":
             guard
               let memberAccess = argument.expression.as(MemberAccessExprSyntax.self),
               memberAccess.declName.baseName.tokenKind == .keyword(.self),
@@ -141,7 +166,7 @@ extension TableMacro: ExtensionMacro {
             columnQueryValueType = "\(raw: base.rewritten(selfRewriter).trimmedDescription)"
             columnQueryOutputType = "\(columnQueryValueType).QueryOutput"
 
-          case let .some(label) where label.text == "primaryKey":
+          case .some(let label) where label.text == "primaryKey":
             guard
               argument.expression.as(BooleanLiteralExprSyntax.self)?.literal.tokenKind
                 == .keyword(.true)
@@ -199,12 +224,8 @@ extension TableMacro: ExtensionMacro {
         )
       }
 
-      // NB: A compiled bug prevents us from applying the '@_Draft' macro directly
-      if identifier == primaryKey?.identifier {
-        draftBindings.append((binding.optionalized(), columnQueryOutputType))
-      } else {
-        draftBindings.append((binding, columnQueryOutputType))
-      }
+      // NB: A compiler bug prevents us from applying the '@_Draft' macro directly
+      draftBindings.append((binding, columnQueryOutputType, identifier == primaryKey?.identifier))
       // NB: End of workaround
 
       var assignedType: String? {
@@ -216,67 +237,6 @@ extension TableMacro: ExtensionMacro {
           .as(DeclReferenceExprSyntax.self)?
           .baseName
           .text
-      }
-      if columnQueryValueType == columnQueryOutputType,
-        let typeIdentifier = columnQueryValueType?.identifier ?? assignedType,
-        ["Date", "UUID"].contains(typeIdentifier)
-      {
-        var fixIts: [FixIt] = []
-        let optional = columnQueryValueType?.isOptionalType == true ? "?" : ""
-        if typeIdentifier.hasPrefix("Date") {
-          for representation in ["ISO8601", "UnixTime", "JulianDay"] {
-            var newProperty = property.with(\.leadingTrivia, "")
-            let attribute = "@Column(as: Date.\(representation)Representation\(optional).self)"
-            newProperty.attributes.insert(
-              AttributeListSyntax.Element("\(raw: attribute)")
-                .with(
-                  \.trailingTrivia,
-                  .newline.merging(property.leadingTrivia.indentation(isOnNewline: true))
-                ),
-              at: newProperty.attributes.startIndex
-            )
-            fixIts.append(
-              FixIt(
-                message: MacroExpansionFixItMessage("Insert '\(attribute)'"),
-                changes: [
-                  .replace(
-                    oldNode: Syntax(property),
-                    newNode: Syntax(newProperty.with(\.leadingTrivia, property.leadingTrivia))
-                  )
-                ]
-              )
-            )
-          }
-        } else if typeIdentifier.hasPrefix("UUID") {
-          for representation in ["Lowercased", "Uppercased", "Bytes"] {
-            var newProperty = property.with(\.leadingTrivia, "")
-            let attribute = "@Column(as: UUID.\(representation)Representation\(optional).self)\n"
-            newProperty.attributes.insert(
-              AttributeListSyntax.Element("\(raw: attribute)"),
-              at: newProperty.attributes.startIndex
-            )
-            fixIts.append(
-              FixIt(
-                message: MacroExpansionFixItMessage("Insert '\(attribute)'"),
-                changes: [
-                  .replace(
-                    oldNode: Syntax(property),
-                    newNode: Syntax(newProperty.with(\.leadingTrivia, property.leadingTrivia))
-                  )
-                ]
-              )
-            )
-          }
-        }
-        diagnostics.append(
-          Diagnostic(
-            node: property,
-            message: MacroExpansionErrorMessage(
-              "'\(typeIdentifier)' column requires a query representation"
-            ),
-            fixIts: fixIts
-          )
-        )
       }
 
       let defaultValue = binding.initializer?.value.rewritten(selfRewriter)
@@ -332,7 +292,7 @@ extension TableMacro: ExtensionMacro {
             var attribute = property.attributes[attributeIndex].as(AttributeSyntax.self),
             let attributeName = attribute.attributeName.as(IdentifierTypeSyntax.self)?.name.text,
             attributeName == "Column",
-            case var .argumentList(arguments) = attribute.arguments
+            case .argumentList(var arguments) = attribute.arguments
           else { continue }
           hasColumnAttribute = true
           var hasPrimaryKeyArgument = false
@@ -425,18 +385,33 @@ extension TableMacro: ExtensionMacro {
         """
 
       // NB: A compiler bug prevents us from applying the '@_Draft' macro directly
-      let memberBlocks = try expansion(
+      var memberBlocks = try expansion(
         of: "@_Draft(\(type).self)",
-        attachedTo: StructDeclSyntax("\(draft)"),
-        providingExtensionsOf: TypeSyntax("\(type).Draft"),
+        providingMembersOf: StructDeclSyntax("\(draft)"),
         conformingTo: [],
         in: context
       )
-      .compactMap(\.memberBlock.members.trimmed)
+      .compactMap(\.trimmed)
+      memberBlocks.append(
+        contentsOf: try expansion(
+          of: "@_Draft(\(type).self)",
+          attachedTo: StructDeclSyntax("\(draft)"),
+          providingExtensionsOf: TypeSyntax("\(type).Draft"),
+          conformingTo: [],
+          in: context
+        )
+        .flatMap {
+          $0.memberBlock.members.trimmed.map(\.decl)
+        }
+      )
       var memberwiseArguments: [PatternBindingSyntax] = []
       var memberwiseAssignments: [TokenSyntax] = []
-      for (binding, queryOutputType) in draftBindings {
-        let argument = binding.trimmed.annotated(queryOutputType).rewritten(selfRewriter)
+      for (binding, queryOutputType, optionalize) in draftBindings {
+        var argument = binding.trimmed
+        if optionalize {
+          argument = argument.optionalized()
+        }
+        argument = argument.annotated(queryOutputType).rewritten(selfRewriter)
         if argument.typeAnnotation == nil {
           let identifier =
             (argument.pattern.as(IdentifierPatternSyntax.self)?.identifier.trimmedDescription)
@@ -510,10 +485,6 @@ extension TableMacro: ExtensionMacro {
       primaryKey != nil
       ? ["Table", "PrimaryKeyedTable"]
       : ["Table"]
-    let schemaConformances: [ExprSyntax] =
-      primaryKey != nil
-      ? ["\(moduleName).TableDefinition", "\(moduleName).PrimaryKeyedTableDefinition"]
-      : ["\(moduleName).TableDefinition"]
     if let inheritanceClause = declaration.inheritanceClause {
       for type in protocolNames {
         if !inheritanceClause.inheritedTypes.contains(where: {
@@ -545,6 +516,12 @@ extension TableMacro: ExtensionMacro {
     }
 
     var typeAliases: [DeclSyntax] = []
+    var letSchemaName: DeclSyntax?
+    if let schemaName {
+      letSchemaName = """
+        public static let schemaName: Swift.String? = \(schemaName)
+        """
+    }
     var initDecoder: DeclSyntax?
     if declaration.hasMacroApplication("Selection") {
       conformances.append("\(moduleName).PartialSelectStatement")
@@ -570,21 +547,409 @@ extension TableMacro: ExtensionMacro {
       DeclSyntax(
         """
         \(declaration.attributes.availability)extension \(type)\
-        \(conformances.isEmpty ? "" : ": \(conformances, separator: ", ")") {
-        public struct TableColumns: \(schemaConformances, separator: ", ") {
-        public typealias QueryValue = \(type.trimmed)
-        \(columnsProperties, separator: "\n")
-        public static var allColumns: [any \(moduleName).TableColumnExpression] { \
-        [\(allColumns.map { "QueryValue.columns.\($0)" as ExprSyntax }, separator: ", ")]
-        }
-        }\(draft)\(typeAliases, separator: "\n")
+        \(conformances.isEmpty ? "" : ": \(conformances, separator: ", ")") {\
+        \(typeAliases, separator: "\n")
         public static let columns = TableColumns()
-        public static let tableName = \(tableName)\(initDecoder)\(initFromOther)
+        public static let tableName = \(tableName)\(letSchemaName)\(initDecoder)\(initFromOther)
         }
         """
       )
       .cast(ExtensionDeclSyntax.self)
     ]
+  }
+}
+
+extension TableMacro: MemberMacro {
+  public static func expansion<D: DeclGroupSyntax, C: MacroExpansionContext>(
+    of node: AttributeSyntax,
+    providingMembersOf declaration: D,
+    conformingTo protocols: [TypeSyntax],
+    in context: C
+  ) throws -> [DeclSyntax] {
+    guard
+      let declaration = declaration.as(StructDeclSyntax.self)
+    else {
+      return []
+    }
+    let type = IdentifierTypeSyntax(name: declaration.name.trimmed)
+    var allColumns: [TokenSyntax] = []
+    var columnsProperties: [DeclSyntax] = []
+    var decodings: [String] = []
+    var decodingUnwrappings: [String] = []
+    var decodingAssignments: [String] = []
+    var expansionFailed = false
+
+    // NB: A compiler bug prevents us from applying the '@_Draft' macro directly
+    var draftBindings: [(PatternBindingSyntax, queryOutputType: TypeSyntax?, optionalize: Bool)] =
+      []
+    // NB: End of workaround
+
+    var draftProperties: [DeclSyntax] = []
+    var primaryKey:
+      (
+        identifier: TokenSyntax,
+        label: TokenSyntax?,
+        queryOutputType: TypeSyntax?,
+        queryValueType: TypeSyntax?
+      )?
+    let selfRewriter = SelfRewriter(selfEquivalent: type.name)
+    for member in declaration.memberBlock.members {
+      guard
+        let property = member.decl.as(VariableDeclSyntax.self),
+        !property.isStatic,
+        !property.isComputed,
+        property.bindings.count == 1,
+        let binding = property.bindings.first,
+        let identifier = binding.pattern.as(IdentifierPatternSyntax.self)?.identifier.trimmed
+      else { continue }
+
+      var columnName = ExprSyntax(
+        StringLiteralExprSyntax(content: identifier.text.trimmingBackticks())
+      )
+      var columnQueryValueType =
+        (binding.typeAnnotation?.type.trimmed
+        ?? binding.initializer?.value.literalType)
+        .map { $0.rewritten(selfRewriter) }
+      var columnQueryOutputType = columnQueryValueType
+      var isPrimaryKey = primaryKey == nil && identifier.text == "id"
+      var isEphemeral = false
+
+      for attribute in property.attributes {
+        guard
+          let attribute = attribute.as(AttributeSyntax.self),
+          let attributeName = attribute.attributeName.as(IdentifierTypeSyntax.self)?.name.text
+        else { continue }
+        isEphemeral = isEphemeral || attributeName == "Ephemeral"
+        guard
+          attributeName == "Column" || isEphemeral,
+          case .argumentList(let arguments) = attribute.arguments
+        else { continue }
+
+        for argumentIndex in arguments.indices {
+          let argument = arguments[argumentIndex]
+
+          switch argument.label {
+          case nil:
+            if !argument.expression.isNonEmptyStringLiteral {
+              expansionFailed = true
+            }
+            columnName = argument.expression
+
+          case .some(let label) where label.text == "as":
+            guard
+              let memberAccess = argument.expression.as(MemberAccessExprSyntax.self),
+              memberAccess.declName.baseName.tokenKind == .keyword(.self),
+              let base = memberAccess.base
+            else {
+              expansionFailed = true
+              continue
+            }
+
+            columnQueryValueType = "\(raw: base.rewritten(selfRewriter).trimmedDescription)"
+            columnQueryOutputType = "\(columnQueryValueType).QueryOutput"
+
+          case .some(let label) where label.text == "primaryKey":
+            guard
+              argument.expression.as(BooleanLiteralExprSyntax.self)?.literal.tokenKind
+                == .keyword(.true)
+            else {
+              isPrimaryKey = false
+              break
+            }
+            if primaryKey != nil {
+              var newArguments = arguments
+              newArguments.remove(at: argumentIndex)
+              expansionFailed = true
+            }
+            primaryKey = (
+              identifier: identifier,
+              label: label,
+              queryOutputType: columnQueryOutputType,
+              queryValueType: columnQueryValueType
+            )
+
+          case let argument?:
+            fatalError("Unexpected argument: \(argument)")
+          }
+        }
+      }
+      guard !isEphemeral
+      else { continue }
+
+      if isPrimaryKey {
+        primaryKey = (
+          identifier: identifier,
+          label: nil,
+          queryOutputType: columnQueryOutputType,
+          queryValueType: columnQueryValueType
+        )
+      }
+
+      // NB: A compiler bug prevents us from applying the '@_Draft' macro directly
+      draftBindings.append((binding, columnQueryOutputType, identifier == primaryKey?.identifier))
+      // NB: End of workaround
+
+      var assignedType: String? {
+        binding
+          .initializer?
+          .value
+          .as(FunctionCallExprSyntax.self)?
+          .calledExpression
+          .as(DeclReferenceExprSyntax.self)?
+          .baseName
+          .text
+      }
+
+      let defaultValue = binding.initializer?.value.rewritten(selfRewriter)
+      columnsProperties.append(
+        """
+        public let \(identifier) = \(moduleName).TableColumn<\
+        QueryValue, \
+        \(columnQueryValueType?.rewritten(selfRewriter) ?? "_")\
+        >(\
+        \(columnName), \
+        keyPath: \\QueryValue.\(identifier)\(defaultValue.map { ", default: \($0)" } ?? "")\
+        )
+        """
+      )
+      allColumns.append(identifier)
+      let decodedType = columnQueryValueType?.asNonOptionalType()
+      if let defaultValue {
+        decodings.append(
+          """
+          self.\(identifier) = try decoder.decode(\(decodedType.map { "\($0).self" } ?? "")) \
+          ?? \(defaultValue)
+          """
+        )
+      } else if columnQueryValueType.map({ $0.isOptionalType }) ?? false {
+        decodings.append(
+          """
+          self.\(identifier) = try decoder.decode(\(decodedType.map { "\($0).self" } ?? ""))
+          """
+        )
+      } else {
+        decodings.append(
+          """
+          let \(identifier) = try decoder.decode(\(decodedType.map { "\($0).self" } ?? ""))
+          """
+        )
+        decodingUnwrappings.append(
+          """
+          guard let \(identifier) else { throw QueryDecodingError.missingRequiredColumn }
+          """
+        )
+        decodingAssignments.append(
+          """
+          self.\(identifier) = \(identifier)
+          """
+        )
+      }
+
+      if let primaryKey, primaryKey.identifier == identifier {
+        var hasColumnAttribute = false
+        var property = property
+        for attributeIndex in property.attributes.indices {
+          guard
+            var attribute = property.attributes[attributeIndex].as(AttributeSyntax.self),
+            let attributeName = attribute.attributeName.as(IdentifierTypeSyntax.self)?.name.text,
+            attributeName == "Column",
+            case .argumentList(var arguments) = attribute.arguments
+          else { continue }
+          hasColumnAttribute = true
+          var hasPrimaryKeyArgument = false
+          for argumentIndex in arguments.indices {
+            var argument = arguments[argumentIndex]
+            defer { arguments[argumentIndex] = argument }
+            switch argument.label?.text {
+            case "as":
+              if var expression = argument.expression.as(MemberAccessExprSyntax.self) {
+                expression.base = "\(expression.base)?"
+                argument.expression = ExprSyntax(expression)
+              }
+
+            case "primaryKey":
+              hasPrimaryKeyArgument = true
+              argument.expression = ExprSyntax(BooleanLiteralExprSyntax(false))
+
+            default:
+              break
+            }
+          }
+          if !hasPrimaryKeyArgument {
+            arguments[arguments.index(before: arguments.endIndex)].trailingComma = .commaToken(
+              trailingTrivia: .space
+            )
+            arguments.append(
+              LabeledExprSyntax(
+                label: "primaryKey",
+                expression: BooleanLiteralExprSyntax(false)
+              )
+            )
+          }
+          attribute.arguments = .argumentList(arguments)
+          property.attributes[attributeIndex] = .attribute(attribute)
+        }
+        property = property.trimmed
+        if !hasColumnAttribute {
+          let attribute = "@Column(primaryKey: false)\n"
+          property.attributes.insert(
+            AttributeListSyntax.Element("\(raw: attribute)"),
+            at: property.attributes.startIndex
+          )
+        }
+        var binding = binding
+        if let type = binding.typeAnnotation?.type.asOptionalType() {
+          binding.typeAnnotation?.type = type
+        }
+        property.bindings = [binding]
+        draftProperties.append(
+          DeclSyntax(
+            property
+              .with(\.bindingSpecifier.leadingTrivia, "")
+              .removingAccessors()
+              .rewritten(selfRewriter)
+          )
+        )
+      } else {
+        draftProperties.append(
+          DeclSyntax(
+            property.trimmed
+              .with(\.bindingSpecifier.leadingTrivia, "")
+              .removingAccessors()
+              .rewritten(selfRewriter)
+          )
+        )
+      }
+    }
+
+    var draft: DeclSyntax?
+    if let primaryKey {
+      columnsProperties.append(
+        """
+        public var primaryKey: \(moduleName).TableColumn<QueryValue, \(primaryKey.queryValueType)> \
+        { self.\(primaryKey.identifier) }
+        """
+      )
+      draft = """
+
+        @_Draft(\(type).self)
+        public struct Draft {
+        \(draftProperties, separator: "\n")
+        }
+        """
+
+      // NB: A compiler bug prevents us from applying the '@_Draft' macro directly
+      var memberBlocks = try expansion(
+        of: "@_Draft(\(type).self)",
+        providingMembersOf: StructDeclSyntax("\(draft)"),
+        conformingTo: [],
+        in: context
+      )
+      .compactMap(\.trimmed)
+      memberBlocks.append(
+        contentsOf: try expansion(
+          of: "@_Draft(\(type).self)",
+          attachedTo: StructDeclSyntax("\(draft)"),
+          providingExtensionsOf: TypeSyntax("\(type).Draft"),
+          conformingTo: [],
+          in: context
+        )
+        .flatMap {
+          $0.memberBlock.members.trimmed.map(\.decl)
+        }
+      )
+      var memberwiseArguments: [PatternBindingSyntax] = []
+      var memberwiseAssignments: [TokenSyntax] = []
+      for (binding, queryOutputType, optionalize) in draftBindings {
+        var argument = binding.trimmed
+        if optionalize {
+          argument = argument.optionalized()
+        }
+        argument = argument.annotated(queryOutputType).rewritten(selfRewriter)
+        if argument.typeAnnotation == nil {
+          expansionFailed = true
+          continue
+        }
+        memberwiseArguments.append(argument)
+        memberwiseAssignments.append(
+          argument.trimmed.pattern.cast(IdentifierPatternSyntax.self).identifier
+        )
+      }
+      let memberwiseInit: DeclSyntax = """
+        public init(
+        \(memberwiseArguments, separator: ",\n")
+        ) {
+        \(memberwiseAssignments.map { "self.\($0) = \($0)" as ExprSyntax }, separator: "\n")
+        }
+        """
+      draft = """
+
+        public struct Draft: \(moduleName).TableDraft {
+        public typealias PrimaryTable = \(type)
+        \(draftProperties, separator: "\n")
+        \(memberBlocks, separator: "\n")
+        \(memberwiseInit)
+        }
+        """
+      // NB: End of workaround
+    }
+
+    var conformances: [TypeSyntax] = []
+    let protocolNames: [TokenSyntax] =
+      primaryKey != nil
+      ? ["Table", "PrimaryKeyedTable"]
+      : ["Table"]
+    let schemaConformances: [ExprSyntax] =
+      primaryKey != nil
+      ? ["\(moduleName).TableDefinition", "\(moduleName).PrimaryKeyedTableDefinition"]
+      : ["\(moduleName).TableDefinition"]
+    if let inheritanceClause = declaration.inheritanceClause {
+      for type in protocolNames {
+        if !inheritanceClause.inheritedTypes.contains(where: {
+          [type.text, "\(moduleName).\(type)"].contains($0.type.trimmedDescription)
+        }) {
+          conformances.append("\(moduleName).\(type)")
+        }
+      }
+    } else {
+      conformances = protocolNames.map { "\(moduleName).\($0)" }
+    }
+
+    if columnsProperties.isEmpty {
+      expansionFailed = true
+    }
+
+    guard !expansionFailed else {
+      return []
+    }
+
+    var typeAliases: [DeclSyntax] = []
+    if declaration.hasMacroApplication("Selection") {
+      conformances.append("\(moduleName).PartialSelectStatement")
+      typeAliases.append(contentsOf: [
+        """
+
+        public typealias QueryValue = Self
+        """,
+        """
+        public typealias From = Swift.Never
+        """,
+      ])
+    }
+
+    return [
+      """
+      public struct TableColumns: \(schemaConformances, separator: ", ") {
+      public typealias QueryValue = \(type.trimmed)
+      \(columnsProperties, separator: "\n")
+      public static var allColumns: [any \(moduleName).TableColumnExpression] { \
+      [\(allColumns.map { "QueryValue.columns.\($0)" as ExprSyntax }, separator: ", ")]
+      }
+      }
+      """,
+      draft,
+    ]
+    .compactMap { $0 }
   }
 }
 
@@ -619,7 +984,7 @@ extension TableMacro: MemberAttributeMacro {
             let attribute = attribute.as(AttributeSyntax.self),
             let attributeName = attribute.attributeName.as(IdentifierTypeSyntax.self)?.name.text,
             attributeName == "Column",
-            case let .argumentList(arguments) = attribute.arguments,
+            case .argumentList(let arguments) = attribute.arguments,
             arguments.contains(
               where: {
                 $0.label?.text.trimmingBackticks() == "primaryKey"

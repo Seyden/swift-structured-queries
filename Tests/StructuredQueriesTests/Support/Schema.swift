@@ -12,6 +12,7 @@ struct RemindersList: Codable, Equatable, Identifiable {
   let id: Int
   var color = 0x4a99ef
   var title = ""
+  var position = 0
 }
 
 @Table
@@ -20,7 +21,6 @@ struct Reminder: Codable, Equatable, Identifiable {
 
   let id: Int
   var assignedUserID: User.ID?
-  @Column(as: Date.ISO8601Representation?.self)
   var dueDate: Date?
   var isCompleted = false
   var isFlagged = false
@@ -28,6 +28,7 @@ struct Reminder: Codable, Equatable, Identifiable {
   var priority: Priority?
   var remindersListID: Int
   var title = ""
+  var updatedAt: Date = Date(timeIntervalSinceReferenceDate: 1_234_567_890)
   static func searching(_ text: String) -> Where<Reminder> {
     Self.where {
       $0.title.collate(.nocase).contains(text)
@@ -66,6 +67,12 @@ struct ReminderTag: Equatable, Codable {
   let tagID: Int
 }
 
+@Table struct Milestone: Codable, Equatable {
+  let id: Int
+  var remindersListID: RemindersList.ID
+  var title = ""
+}
+
 extension Database {
   static func `default`() throws -> Database {
     let db = try Database()
@@ -80,7 +87,8 @@ extension Database {
       CREATE TABLE "remindersLists" (
         "id" INTEGER PRIMARY KEY AUTOINCREMENT,
         "color" INTEGER NOT NULL DEFAULT 4889071,
-        "title" TEXT NOT NULL DEFAULT ''
+        "title" TEXT NOT NULL DEFAULT '',
+        "position" INTEGER NOT NULL DEFAULT 0
       )
       """
     )
@@ -100,7 +108,8 @@ extension Database {
         "remindersListID" INTEGER NOT NULL REFERENCES "remindersLists"("id") ON DELETE CASCADE,
         "notes" TEXT NOT NULL DEFAULT '',
         "priority" INTEGER,
-        "title" TEXT NOT NULL DEFAULT ''
+        "title" TEXT NOT NULL DEFAULT '',
+        "updatedAt" TEXT NOT NULL DEFAULT (datetime('subsec'))
       )
       """
     )
@@ -129,18 +138,18 @@ extension Database {
       """
       CREATE TABLE "remindersTags" (
         "reminderID" INTEGER NOT NULL REFERENCES "reminders"("id") ON DELETE CASCADE,
-        "tagID" INTEGER NOT NULL REFERENCES "tags"("id") ON DELETE CASCADE
+        "tagID" INTEGER NOT NULL REFERENCES "tags"("id") ON DELETE CASCADE,
+        UNIQUE("reminderID", "tagID")
       )
       """
     )
     try execute(
       """
-      CREATE INDEX "index_remindersTags_on_reminderID" ON "remindersTags"("reminderID")
-      """
-    )
-    try execute(
-      """
-      CREATE INDEX "index_remindersTags_on_tagID" ON "remindersTags"("tagID")
+      CREATE TABLE "milestones" (
+        "id" INTEGER PRIMARY KEY AUTOINCREMENT,
+        "remindersListID" INTEGER NOT NULL REFERENCES "remindersLists"("id") ON DELETE CASCADE,
+        "title" TEXT NOT NULL DEFAULT ''
+      )
       """
     )
   }
@@ -244,6 +253,9 @@ extension Database {
       ReminderTag(reminderID: 2, tagID: 4)
       ReminderTag(reminderID: 4, tagID: 1)
       ReminderTag(reminderID: 4, tagID: 2)
+      Milestone.Draft(remindersListID: 1, title: "Phase 1")
+      Milestone.Draft(remindersListID: 1, title: "Phase 2")
+      Milestone.Draft(remindersListID: 1, title: "Phase 3")
     }
     .forEach(execute)
   }

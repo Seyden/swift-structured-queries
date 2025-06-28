@@ -15,7 +15,6 @@ struct Reminder {
   var title = ""
   var isCompleted = false
   var priority: Int?
-  @Column(as: Date.ISO8601Representation?.self)
   var dueDate: Date?
 }
 ```
@@ -125,6 +124,7 @@ reading to learn more about building SQL with StructuredQueries.
 - <doc:UpdateStatements>
 - <doc:DeleteStatements>
 - <doc:WhereClauses>
+- <doc:Triggers>
 - <doc:CommonTableExpressions>
 - <doc:StatementTypes>
 
