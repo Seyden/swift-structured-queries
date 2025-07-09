@@ -458,7 +458,7 @@ extension SnapshotTests {
     @Test func upsertNonPrimaryKey_onConflictDoUpdate() {
       assertQuery(
         ReminderTag.insert {
-          ReminderTag(reminderID: 1, tagID: 3)
+          ReminderTag.Draft(reminderID: 1, tagID: 3)
         } onConflict: {
           ($0.reminderID, $0.tagID)
         }
@@ -466,12 +466,12 @@ extension SnapshotTests {
       ) {
         """
         INSERT INTO "remindersTags"
-        ("reminderID", "tagID")
+        ("id", "reminderID", "tagID")
         VALUES
-        (1, 3)
+        (NULL, 1, 3)
         ON CONFLICT ("reminderID", "tagID")
         DO NOTHING
-        RETURNING "reminderID", "tagID"
+        RETURNING "id", "reminderID", "tagID"
         """
       }
     }
@@ -655,12 +655,12 @@ extension SnapshotTests {
         .returning(\.id)
       ) {
         """
-        INSERT INTO "remindersLists"
-        ("title")
+        INSERT INTO remindersLists
+        (title)
         SELECT 'Groceries'
-        RETURNING "id"
+        RETURNING id
         """
-      } results: {
+      }results: {
         """
         ┌───┐
         │ 4 │

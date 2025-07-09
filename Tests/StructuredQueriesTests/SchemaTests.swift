@@ -55,7 +55,7 @@ extension SnapshotTests {
     }
 
     @Table("reminders", schema: "main")
-    fileprivate struct Reminder {
+    struct Reminder {
       let id: Int
       let remindersListID: Int
     }

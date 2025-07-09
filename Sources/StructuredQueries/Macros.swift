@@ -15,7 +15,8 @@ import StructuredQueriesCore
   named(init(decoder:)),
   named(QueryValue),
   named(schemaName),
-  named(tableName)
+  named(tableName),
+  arbitrary
 )
 @attached(member, names: named(Draft), named(TableColumns))
 @attached(memberAttribute)

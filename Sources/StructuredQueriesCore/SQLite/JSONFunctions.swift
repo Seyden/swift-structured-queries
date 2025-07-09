@@ -171,9 +171,9 @@ extension PrimaryKeyedTableDefinition {
   where QueryValue == Wrapped? {
     let filterQueryFragment =
       if let filter {
-        self.primaryKey.isNot(nil).and(filter).queryFragment
+        SQLQueryExpression("(\(primaryKey.queryFragment) IS NOT NULL AND \(filter.queryFragment))").queryFragment
       } else {
-        self.primaryKey.isNot(nil).queryFragment
+        SQLQueryExpression("\(primaryKey.queryFragment) IS NOT NULL").queryFragment
       }
     return AggregateFunction(
       "json_group_array",

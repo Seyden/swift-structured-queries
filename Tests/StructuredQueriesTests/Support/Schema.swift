@@ -63,6 +63,7 @@ struct Tag: Codable, Equatable, Identifiable {
 
 @Table("remindersTags")
 struct ReminderTag: Equatable, Codable {
+  let id: Int
   let reminderID: Int
   let tagID: Int
 }
@@ -137,6 +138,7 @@ extension Database {
     try execute(
       """
       CREATE TABLE "remindersTags" (
+        "id" INTEGER PRIMARY KEY AUTOINCREMENT,
         "reminderID" INTEGER NOT NULL REFERENCES "reminders"("id") ON DELETE CASCADE,
         "tagID" INTEGER NOT NULL REFERENCES "tags"("id") ON DELETE CASCADE,
         UNIQUE("reminderID", "tagID")
@@ -149,6 +151,17 @@ extension Database {
         "id" INTEGER PRIMARY KEY AUTOINCREMENT,
         "remindersListID" INTEGER NOT NULL REFERENCES "remindersLists"("id") ON DELETE CASCADE,
         "title" TEXT NOT NULL DEFAULT ''
+      )
+      """
+    )
+    try execute(
+      """
+      CREATE TABLE "tokens" (
+        "name" TEXT NOT NULL,
+        "axis" TEXT NOT NULL,
+        "value" INT NOT NULL,
+        "description" TEXT NOT NULL,
+        PRIMARY KEY("name", "axis")
       )
       """
     )
@@ -247,15 +260,17 @@ extension Database {
       Tag(id: 2, title: "kids")
       Tag(id: 3, title: "someday")
       Tag(id: 4, title: "optional")
-      ReminderTag(reminderID: 1, tagID: 3)
-      ReminderTag(reminderID: 1, tagID: 4)
-      ReminderTag(reminderID: 2, tagID: 3)
-      ReminderTag(reminderID: 2, tagID: 4)
-      ReminderTag(reminderID: 4, tagID: 1)
-      ReminderTag(reminderID: 4, tagID: 2)
+      ReminderTag(id: 1, reminderID: 1, tagID: 3)
+      ReminderTag(id: 2, reminderID: 1, tagID: 4)
+      ReminderTag(id: 3, reminderID: 2, tagID: 3)
+      ReminderTag(id: 4, reminderID: 2, tagID: 4)
+      ReminderTag(id: 5, reminderID: 4, tagID: 1)
+      ReminderTag(id: 6, reminderID: 4, tagID: 2)
       Milestone.Draft(remindersListID: 1, title: "Phase 1")
       Milestone.Draft(remindersListID: 1, title: "Phase 2")
       Milestone.Draft(remindersListID: 1, title: "Phase 3")
+      //Token.Draft(name: "A", axis: "x", value: 42, description: "Blob")
+      //Token.Draft(name: "B", axis: "y", value: 42, description: "Blob")
     }
     .forEach(execute)
   }

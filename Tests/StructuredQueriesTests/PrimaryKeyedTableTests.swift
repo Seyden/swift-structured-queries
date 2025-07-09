@@ -62,6 +62,40 @@ extension SnapshotTests {
       }
     }
 
+    @Test func updateByIDMultiKey() {
+      assertQuery(
+        Token.where { $0.name.eq("A") && $0.axis.eq("x") }.update { $0.value = 43 }
+          .returning(\.description)
+      ) {
+        """
+        UPDATE "tokens"
+        SET "value" = 43
+        WHERE (("tokens"."name" = 'A') AND ("tokens"."axis" = 'x'))
+        RETURNING "description"
+        """
+      }results: {
+        """
+
+        """
+      }
+
+      assertQuery(
+        Token.update { $0.value = 44 }.where { $0.name.eq("A") && $0.axis.eq("x") }
+          .returning(\.description)
+      ) {
+        """
+        UPDATE "tokens"
+        SET "value" = 44
+        WHERE (("tokens"."name" = 'A') AND ("tokens"."axis" = 'x'))
+        RETURNING "description"
+        """
+      } results: {
+        """
+
+        """
+      }
+    }
+
     @Test func deleteByID() {
       assertQuery(
         Reminder.find(1).delete()
@@ -99,6 +133,8 @@ extension SnapshotTests {
     }
 
     @Test func findByID() {
+
+        //Reminder.find(id: 1)
       assertQuery(
         Reminder.find(1).select { ($0.id, $0.title) }
       ) {

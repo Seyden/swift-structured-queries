@@ -4,6 +4,7 @@ import SwiftDiagnostics
 import SwiftSyntax
 import SwiftSyntaxBuilder
 import SwiftSyntaxMacros
+import SwiftParser
 
 public enum TableMacro {}
 
@@ -40,13 +41,12 @@ extension TableMacro: ExtensionMacro {
 
     var draftProperties: [DeclSyntax] = []
     var draftTableType: TypeSyntax?
-    var primaryKey:
-      (
-        identifier: TokenSyntax,
-        label: TokenSyntax?,
-        queryOutputType: TypeSyntax?,
-        queryValueType: TypeSyntax?
-      )?
+    var primaryKeys: [(
+      identifier: TokenSyntax,
+      label: TokenSyntax?,
+      queryOutputType: TypeSyntax?,
+      queryValueType: TypeSyntax?
+    )] = []
     let selfRewriter = SelfRewriter(
       selfEquivalent: type.as(IdentifierTypeSyntax.self)?.name ?? "QueryValue"
     )
@@ -119,7 +119,7 @@ extension TableMacro: ExtensionMacro {
         ?? binding.initializer?.value.literalType)
         .map { $0.rewritten(selfRewriter) }
       var columnQueryOutputType = columnQueryValueType
-      var isPrimaryKey = primaryKey == nil && identifier.text == "id"
+      var isPrimaryKey = primaryKeys.isEmpty && identifier.text == "id"
       var isEphemeral = false
 
       for attribute in property.attributes {
@@ -174,37 +174,13 @@ extension TableMacro: ExtensionMacro {
               isPrimaryKey = false
               break
             }
-            if let primaryKey, let originalLabel = primaryKey.label {
-              var newArguments = arguments
-              newArguments.remove(at: argumentIndex)
-              diagnostics.append(
-                Diagnostic(
-                  node: label,
-                  message: MacroExpansionErrorMessage(
-                    "'@Table' only supports a single primary key"
-                  ),
-                  notes: [
-                    Note(
-                      node: Syntax(originalLabel),
-                      position: originalLabel.position,
-                      message: MacroExpansionNoteMessage(
-                        "Primary key already applied to '\(primaryKey.identifier)'"
-                      )
-                    )
-                  ],
-                  fixIt: .replace(
-                    message: MacroExpansionFixItMessage("Remove 'primaryKey: true'"),
-                    oldNode: Syntax(attribute),
-                    newNode: Syntax(attribute.with(\.arguments, .argumentList(newArguments)))
-                  )
-                )
+            primaryKeys.append(
+              (
+                identifier: identifier,
+                label: label,
+                queryOutputType: columnQueryOutputType,
+                queryValueType: columnQueryValueType
               )
-            }
-            primaryKey = (
-              identifier: identifier,
-              label: label,
-              queryOutputType: columnQueryOutputType,
-              queryValueType: columnQueryValueType
             )
 
           case let argument?:
@@ -216,16 +192,18 @@ extension TableMacro: ExtensionMacro {
       else { continue }
 
       if isPrimaryKey {
-        primaryKey = (
-          identifier: identifier,
-          label: nil,
-          queryOutputType: columnQueryOutputType,
-          queryValueType: columnQueryValueType
+        primaryKeys.append(
+          (
+            identifier: identifier,
+            label: nil,
+            queryOutputType: columnQueryOutputType,
+            queryValueType: columnQueryValueType
+          )
         )
       }
 
       // NB: A compiler bug prevents us from applying the '@_Draft' macro directly
-      draftBindings.append((binding, columnQueryOutputType, identifier == primaryKey?.identifier))
+      draftBindings.append((binding, columnQueryOutputType, identifier == primaryKeys.first?.identifier))
       // NB: End of workaround
 
       var assignedType: String? {
@@ -284,7 +262,7 @@ extension TableMacro: ExtensionMacro {
         )
       }
 
-      if let primaryKey, primaryKey.identifier == identifier {
+      if primaryKeys.contains(where: { $0.identifier == identifier }) {
         var hasColumnAttribute = false
         var property = property
         for attributeIndex in property.attributes.indices {
@@ -369,13 +347,32 @@ extension TableMacro: ExtensionMacro {
         \(allColumns.map { "self.\($0) = other.\($0)" as ExprSyntax }, separator: "\n")
         }
         """
-    } else if let primaryKey {
-      columnsProperties.append(
-        """
-        public var primaryKey: \(moduleName).TableColumn<QueryValue, \(primaryKey.queryValueType)> \
-        { self.\(primaryKey.identifier) }
-        """
-      )
+    } else if !primaryKeys.isEmpty {
+      if primaryKeys.count == 1 {
+        columnsProperties.append(
+          """
+          public var primaryKey: \(moduleName).TableColumn<QueryValue, \(primaryKeys.first!.queryValueType)> \
+          { self.\(primaryKeys.first!.identifier) }
+          """
+        )
+      } else {
+        // For multiple primary keys, generate individual primary key properties
+        for (index, pk) in primaryKeys.enumerated() {
+          columnsProperties.append(
+            """
+            public var primaryKey\(raw: index + 1): \(moduleName).TableColumn<QueryValue, \(pk.queryValueType)> \
+            { self.\(pk.identifier) }
+            """
+          )
+        }
+        // Also generate a composite primary key using the first one for compatibility
+        columnsProperties.append(
+          """
+          public var primaryKey: \(moduleName).TableColumn<QueryValue, \(primaryKeys.first!.queryValueType)> \
+          { self.\(primaryKeys.first!.identifier) }
+          """
+        )
+      }
       draft = """
 
         @_Draft(\(type).self)
@@ -482,7 +479,7 @@ extension TableMacro: ExtensionMacro {
 
     var conformances: [TypeSyntax] = []
     let protocolNames: [TokenSyntax] =
-      primaryKey != nil
+      !primaryKeys.isEmpty
       ? ["Table", "PrimaryKeyedTable"]
       : ["Table"]
     if let inheritanceClause = declaration.inheritanceClause {
@@ -543,12 +540,25 @@ extension TableMacro: ExtensionMacro {
         """
     }
 
+    // Generate a static find method for the table if there are primary keys
+    var findMethod: String? = nil
+    if !primaryKeys.isEmpty {
+      let params = primaryKeys.map { pk in
+        "\(pk.identifier): \(pk.queryValueType?.trimmedDescription ?? "Any")"
+      }.joined(separator: ", ")
+      let conditions = primaryKeys.map { pk in
+        "$0.\(pk.identifier).eq(\(pk.identifier))"
+      }.joined(separator: " && ")
+      findMethod = "public static func find(\(params)) -> Where<Self> { Self.where { \(conditions) } }"
+    }
+
     return [
       DeclSyntax(
         """
         \(declaration.attributes.availability)extension \(type)\
         \(conformances.isEmpty ? "" : ": \(conformances, separator: ", ")") {\
         \(typeAliases, separator: "\n")
+        \(raw: findMethod ?? "")
         public static let columns = TableColumns()
         public static let tableName = \(tableName)\(letSchemaName)\(initDecoder)\(initFromOther)
         }
@@ -585,13 +595,12 @@ extension TableMacro: MemberMacro {
     // NB: End of workaround
 
     var draftProperties: [DeclSyntax] = []
-    var primaryKey:
-      (
-        identifier: TokenSyntax,
-        label: TokenSyntax?,
-        queryOutputType: TypeSyntax?,
-        queryValueType: TypeSyntax?
-      )?
+    var primaryKeys: [(
+      identifier: TokenSyntax,
+      label: TokenSyntax?,
+      queryOutputType: TypeSyntax?,
+      queryValueType: TypeSyntax?
+    )] = []
     let selfRewriter = SelfRewriter(selfEquivalent: type.name)
     for member in declaration.memberBlock.members {
       guard
@@ -611,7 +620,7 @@ extension TableMacro: MemberMacro {
         ?? binding.initializer?.value.literalType)
         .map { $0.rewritten(selfRewriter) }
       var columnQueryOutputType = columnQueryValueType
-      var isPrimaryKey = primaryKey == nil && identifier.text == "id"
+      var isPrimaryKey = primaryKeys.isEmpty && identifier.text == "id"
       var isEphemeral = false
 
       for attribute in property.attributes {
@@ -656,16 +665,13 @@ extension TableMacro: MemberMacro {
               isPrimaryKey = false
               break
             }
-            if primaryKey != nil {
-              var newArguments = arguments
-              newArguments.remove(at: argumentIndex)
-              expansionFailed = true
-            }
-            primaryKey = (
-              identifier: identifier,
-              label: label,
-              queryOutputType: columnQueryOutputType,
-              queryValueType: columnQueryValueType
+            primaryKeys.append(
+              (
+                identifier: identifier,
+                label: label,
+                queryOutputType: columnQueryOutputType,
+                queryValueType: columnQueryValueType
+              )
             )
 
           case let argument?:
@@ -677,16 +683,18 @@ extension TableMacro: MemberMacro {
       else { continue }
 
       if isPrimaryKey {
-        primaryKey = (
-          identifier: identifier,
-          label: nil,
-          queryOutputType: columnQueryOutputType,
-          queryValueType: columnQueryValueType
+        primaryKeys.append(
+          (
+            identifier: identifier,
+            label: nil,
+            queryOutputType: columnQueryOutputType,
+            queryValueType: columnQueryValueType
+          )
         )
       }
 
       // NB: A compiler bug prevents us from applying the '@_Draft' macro directly
-      draftBindings.append((binding, columnQueryOutputType, identifier == primaryKey?.identifier))
+      draftBindings.append((binding, columnQueryOutputType, identifier == primaryKeys.first?.identifier))
       // NB: End of workaround
 
       var assignedType: String? {
@@ -745,7 +753,7 @@ extension TableMacro: MemberMacro {
         )
       }
 
-      if let primaryKey, primaryKey.identifier == identifier {
+      if primaryKeys.contains(where: { $0.identifier == identifier }) {
         var hasColumnAttribute = false
         var property = property
         for attributeIndex in property.attributes.indices {
@@ -823,11 +831,11 @@ extension TableMacro: MemberMacro {
     }
 
     var draft: DeclSyntax?
-    if let primaryKey {
+    if !primaryKeys.isEmpty {
       columnsProperties.append(
         """
-        public var primaryKey: \(moduleName).TableColumn<QueryValue, \(primaryKey.queryValueType)> \
-        { self.\(primaryKey.identifier) }
+        public var primaryKey: \(moduleName).TableColumn<QueryValue, \(primaryKeys.first!.queryValueType)> \
+        { self.\(primaryKeys.first!.identifier) }
         """
       )
       draft = """
@@ -896,11 +904,11 @@ extension TableMacro: MemberMacro {
 
     var conformances: [TypeSyntax] = []
     let protocolNames: [TokenSyntax] =
-      primaryKey != nil
+      !primaryKeys.isEmpty
       ? ["Table", "PrimaryKeyedTable"]
       : ["Table"]
     let schemaConformances: [ExprSyntax] =
-      primaryKey != nil
+      !primaryKeys.isEmpty
       ? ["\(moduleName).TableDefinition", "\(moduleName).PrimaryKeyedTableDefinition"]
       : ["\(moduleName).TableDefinition"]
     if let inheritanceClause = declaration.inheritanceClause {
@@ -948,8 +956,7 @@ extension TableMacro: MemberMacro {
       }
       """,
       draft,
-    ]
-    .compactMap { $0 }
+    ].compactMap { $0 }
   }
 }
 
