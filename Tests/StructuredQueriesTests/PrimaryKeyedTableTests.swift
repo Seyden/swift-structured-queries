@@ -317,6 +317,91 @@ extension SnapshotTests {
       }
     }
 
+    @Test func seyden() throws {
+        try database.execute(
+                """
+                CREATE TABLE "seydens" (
+                  "sourceId" TEXT NOT NULL,
+                  "titleId" TEXT NOT NULL,
+                  "description" TEXT NOT NULL,
+                  PRIMARY KEY("sourceId", "titleId")
+                )
+                """
+        )
+
+        try database.execute(
+          Seyden.insert {
+              Seyden.Draft(sourceId: "Asura", titleId: "Genshin", description: "Blob")
+              Seyden.Draft(sourceId: "Asura", titleId: "Swordmaster", description: "Blob")
+          }
+        )
+
+        var seyden = try #require(try database.execute(Seyden.all).first)
+        seyden.description = "Updated"
+        assertQuery(
+          Seyden
+            .update(seyden)
+            .returning(\.self)) {
+          """
+          UPDATE "seydens"
+          SET "description" = 'Updated'
+          WHERE ("seydens"."sourceId" = 'Asura') AND ("seydens"."titleId" = 'Genshin')
+          RETURNING "sourceId", "titleId", "description"
+          """
+        } results: {
+          """
+          ┌──────────────────────────┐
+          │ Seyden(                  │
+          │   sourceId: "Asura",     │
+          │   titleId: "Genshin",    │
+          │   description: "Updated" │
+          │ )                        │
+          └──────────────────────────┘
+          """
+        }
+
+        assertQuery(Seyden.all) {
+          """
+          SELECT "seydens"."sourceId", "seydens"."titleId", "seydens"."description"
+          FROM "seydens"
+          """
+        }results: {
+          """
+          ┌───────────────────────────┐
+          │ Seyden(                   │
+          │   sourceId: "Asura",      │
+          │   titleId: "Genshin",     │
+          │   description: "Updated"  │
+          │ )                         │
+          ├───────────────────────────┤
+          │ Seyden(                   │
+          │   sourceId: "Asura",      │
+          │   titleId: "Swordmaster", │
+          │   description: "Blob"     │
+          │ )                         │
+          └───────────────────────────┘
+          """
+        }
+
+        assertQuery(Seyden.where { $0.sourceId.eq("Asura") && $0.titleId.eq("Genshin") }) {
+          """
+          SELECT "seydens"."sourceId", "seydens"."titleId", "seydens"."description"
+          FROM "seydens"
+          WHERE (("seydens"."sourceId" = 'Asura') AND ("seydens"."titleId" = 'Genshin'))
+          """
+        }results: {
+          """
+          ┌──────────────────────────┐
+          │ Seyden(                  │
+          │   sourceId: "Asura",     │
+          │   titleId: "Genshin",    │
+          │   description: "Updated" │
+          │ )                        │
+          └──────────────────────────┘
+          """
+        }
+    }
+
     @Test func joinWith() {
       // RemindersList.join(Reminder.all, with: \.remindersListID)
       // Reminder.join(RemindersList.all, with: \.remindersListID)
@@ -330,4 +415,13 @@ private struct Row {
   var isDeleted = false
   @Column(generated: .virtual)
   let isNotDeleted: Bool
+}
+
+@Table
+private struct Seyden {
+    @Column(primaryKey: true)
+    let sourceId: String
+    @Column(primaryKey: true)
+    let titleId: String
+    var description: String
 }

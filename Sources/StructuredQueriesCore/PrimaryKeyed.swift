@@ -52,8 +52,8 @@ where QueryValue: PrimaryKeyedTable {
   associatedtype PrimaryKey: QueryBindable
   where PrimaryKey.QueryValue == PrimaryKey, PrimaryKey.QueryValue.QueryOutput: Sendable
 
-  /// The column representing this table's primary key.
-  var primaryKey: TableColumn<QueryValue, PrimaryKey> { get }
+  /// The columns representing this table's primary keys.
+  var primaryKeys: [TableColumn<QueryValue, PrimaryKey>] { get }
 }
 
 extension TableDefinition where QueryValue: TableDraft {
@@ -72,28 +72,81 @@ extension PrimaryKeyedTableDefinition {
   public func count(
     filter: (some QueryExpression<Bool>)? = Bool?.none
   ) -> some QueryExpression<Int> {
-    primaryKey.count(filter: filter)
+    // For multiple primary keys, we'll use the first one for counting
+    primaryKeys.first!.count(filter: filter)
+  }
+  
+  /// Get the primary key at the specified index with its actual type.
+  /// This provides type-safe access to heterogeneous primary keys.
+  public subscript<T: QueryBindable>(index: Int) -> TableColumn<QueryValue, T>? {
+    guard index < primaryKeys.count else { return nil }
+    return primaryKeys[index] as? TableColumn<QueryValue, T>
   }
 }
 
 extension PrimaryKeyedTable {
-  /// A where clause filtered by a primary key.
+  /// A where clause filtered by primary keys.
+  ///
+  /// - Parameter primaryKeys: Primary keys identifying a table row.
+  /// - Returns: A `WHERE` clause.
+  public static func find(
+    _ primaryKeys: [some QueryExpression<TableColumns.PrimaryKey>]
+  ) -> Where<Self> {
+    guard !primaryKeys.isEmpty else {
+      return Where<Self>(predicates: [])
+    }
+    
+    var whereClause = Where<Self>(predicates: [])
+    
+    for (column, key) in zip(Self.columns.primaryKeys, primaryKeys) {
+      let condition = column.eq(key)
+      whereClause = whereClause.where { _ in condition }
+    }
+    
+    return whereClause
+  }
+
+  /// A where clause filtered by a single primary key (for backward compatibility).
   ///
   /// - Parameter primaryKey: A primary key identifying a table row.
   /// - Returns: A `WHERE` clause.
   public static func find(
     _ primaryKey: some QueryExpression<TableColumns.PrimaryKey>
   ) -> Where<Self> {
-    Self.where { $0.primaryKey.eq(primaryKey) }
+    // For single primary key lookup, use the first primary key
+    Self.where { $0.primaryKeys.first!.eq(primaryKey) }
   }
 
-  public var primaryKey: PrimaryKey.QueryOutput {
-    self[keyPath: Self.columns.primaryKey.keyPath]
+  public var primaryKeys: [PrimaryKey.QueryOutput] {
+    Self.columns.primaryKeys.map { column in
+      self[keyPath: column.keyPath]
+    }
   }
 }
 
 extension TableDraft {
-  /// A where clause filtered by a primary key.
+  /// A where clause filtered by primary keys.
+  ///
+  /// - Parameter primaryKeys: Primary keys identifying a table row.
+  /// - Returns: A `WHERE` clause.
+  public static func find(
+    _ primaryKeys: [some QueryExpression<PrimaryTable.TableColumns.PrimaryKey>]
+  ) -> Where<Self> {
+    guard !primaryKeys.isEmpty else {
+      return Where<Self>(predicates: [])
+    }
+    
+    var whereClause = Where<Self>(predicates: [])
+    
+    for (column, key) in zip(PrimaryTable.columns.primaryKeys, primaryKeys) {
+      let condition = column.eq(key)
+      whereClause = whereClause.where { _ in condition }
+    }
+    
+    return whereClause
+  }
+
+  /// A where clause filtered by a single primary key (for backward compatibility).
   ///
   /// - Parameter primaryKey: A primary key identifying a table row.
   /// - Returns: A `WHERE` clause.
@@ -101,29 +154,61 @@ extension TableDraft {
     _ primaryKey: some QueryExpression<PrimaryTable.TableColumns.PrimaryKey>
   ) -> Where<Self> {
     Self.where { _ in
-      PrimaryTable.columns.primaryKey.eq(primaryKey)
+      PrimaryTable.columns.primaryKeys.first!.eq(primaryKey)
     }
   }
 }
 
 extension Where where From: PrimaryKeyedTable {
-  /// Adds a primary key condition to a where clause.
+  /// Adds primary key conditions to a where clause.
+  ///
+  /// - Parameter primaryKeys: Primary keys.
+  /// - Returns: A where clause with the added primary keys.
+  public func find(_ primaryKeys: [some QueryExpression<From.TableColumns.PrimaryKey>]) -> Self {
+    guard !primaryKeys.isEmpty else { return self }
+    
+    var result = self
+    for (column, key) in zip(From.columns.primaryKeys, primaryKeys) {
+      let condition = column.eq(key)
+      result = result.where { _ in condition }
+    }
+    return result
+  }
+
+  /// Adds a primary key condition to a where clause (for backward compatibility).
   ///
   /// - Parameter primaryKey: A primary key.
   /// - Returns: A where clause with the added primary key.
   public func find(_ primaryKey: some QueryExpression<From.TableColumns.PrimaryKey>) -> Self {
-    self.where { $0.primaryKey.eq(primaryKey) }
+    self.where { $0.primaryKeys.first!.eq(primaryKey) }
   }
 }
 
 extension Where where From: TableDraft {
-  /// Adds a primary key condition to a where clause.
+  /// Adds primary key conditions to a where clause.
+  ///
+  /// - Parameter primaryKeys: Primary keys.
+  /// - Returns: A where clause with the added primary keys.
+  public func find(_ primaryKeys: [From.PrimaryTable.TableColumns.PrimaryKey.QueryOutput]) -> Self {
+    guard !primaryKeys.isEmpty else { return self }
+    
+    var result = self
+    for (column, key) in zip(From.PrimaryTable.columns.primaryKeys, primaryKeys) {
+      let condition = column.eq(
+        From.PrimaryTable.TableColumns.PrimaryKey(queryOutput: key)
+      )
+      result = result.where { _ in condition }
+    }
+    return result
+  }
+
+  /// Adds a primary key condition to a where clause (for backward compatibility).
   ///
   /// - Parameter primaryKey: A primary key.
   /// - Returns: A where clause with the added primary key.
   public func find(_ primaryKey: From.PrimaryTable.TableColumns.PrimaryKey.QueryOutput) -> Self {
     self.where { _ in
-      From.PrimaryTable.columns.primaryKey.eq(
+      From.PrimaryTable.columns.primaryKeys.first!.eq(
         From.PrimaryTable.TableColumns.PrimaryKey(queryOutput: primaryKey)
       )
     }
@@ -131,7 +216,15 @@ extension Where where From: TableDraft {
 }
 
 extension Select where From: PrimaryKeyedTable {
-  /// A select statement filtered by a primary key.
+  /// A select statement filtered by primary keys.
+  ///
+  /// - Parameter primaryKeys: Primary keys identifying a table row.
+  /// - Returns: A select statement filtered by the given keys.
+  public func find(_ primaryKeys: [some QueryExpression<From.TableColumns.PrimaryKey>]) -> Self {
+    self.and(From.find(primaryKeys))
+  }
+
+  /// A select statement filtered by a primary key (for backward compatibility).
   ///
   /// - Parameter primaryKey: A primary key identifying a table row.
   /// - Returns: A select statement filtered by the given key.
@@ -141,7 +234,17 @@ extension Select where From: PrimaryKeyedTable {
 }
 
 extension Select where From: TableDraft {
-  /// A select statement filtered by a primary key.
+  /// A select statement filtered by primary keys.
+  ///
+  /// - Parameter primaryKeys: Primary keys identifying a table row.
+  /// - Returns: A select statement filtered by the given keys.
+  public func find(
+    _ primaryKeys: [some QueryExpression<From.PrimaryTable.TableColumns.PrimaryKey>]
+  ) -> Self {
+    self.and(From.find(primaryKeys))
+  }
+
+  /// A select statement filtered by a primary key (for backward compatibility).
   ///
   /// - Parameter primaryKey: A primary key identifying a table row.
   /// - Returns: A select statement filtered by the given key.
@@ -153,23 +256,55 @@ extension Select where From: TableDraft {
 }
 
 extension Update where From: PrimaryKeyedTable {
-  /// An update statement filtered by a primary key.
+  /// An update statement filtered by primary keys.
+  ///
+  /// - Parameter primaryKeys: Primary keys identifying a table row.
+  /// - Returns: An update statement filtered by the given keys.
+  public func find(_ primaryKeys: [some QueryExpression<From.TableColumns.PrimaryKey>]) -> Self {
+    guard !primaryKeys.isEmpty else { return self }
+    
+    var result = self
+    for (column, key) in zip(From.columns.primaryKeys, primaryKeys) {
+      let condition = column.eq(key)
+      result = result.where { _ in condition }
+    }
+    return result
+  }
+
+  /// An update statement filtered by a primary key (for backward compatibility).
   ///
   /// - Parameter primaryKey: A primary key identifying a table row.
   /// - Returns: An update statement filtered by the given key.
   public func find(_ primaryKey: some QueryExpression<From.TableColumns.PrimaryKey>) -> Self {
-    self.where { $0.primaryKey.eq(primaryKey) }
+    self.where { $0.primaryKeys.first!.eq(primaryKey) }
   }
 }
 
 extension Update where From: TableDraft {
-  /// An update statement filtered by a primary key.
+  /// An update statement filtered by primary keys.
+  ///
+  /// - Parameter primaryKeys: Primary keys identifying a table row.
+  /// - Returns: An update statement filtered by the given keys.
+  public func find(_ primaryKeys: [From.PrimaryTable.TableColumns.PrimaryKey.QueryOutput]) -> Self {
+    guard !primaryKeys.isEmpty else { return self }
+    
+    var result = self
+    for (column, key) in zip(From.PrimaryTable.columns.primaryKeys, primaryKeys) {
+      let condition = column.eq(
+        From.PrimaryTable.TableColumns.PrimaryKey(queryOutput: key)
+      )
+      result = result.where { _ in condition }
+    }
+    return result
+  }
+
+  /// An update statement filtered by a primary key (for backward compatibility).
   ///
   /// - Parameter primaryKey: A primary key identifying a table row.
   /// - Returns: An update statement filtered by the given key.
   public func find(_ primaryKey: From.PrimaryTable.TableColumns.PrimaryKey.QueryOutput) -> Self {
     self.where { _ in
-      From.PrimaryTable.columns.primaryKey.eq(
+      From.PrimaryTable.columns.primaryKeys.first!.eq(
         From.PrimaryTable.TableColumns.PrimaryKey(queryOutput: primaryKey)
       )
     }
@@ -177,23 +312,55 @@ extension Update where From: TableDraft {
 }
 
 extension Delete where From: PrimaryKeyedTable {
-  /// A delete statement filtered by a primary key.
+  /// A delete statement filtered by primary keys.
+  ///
+  /// - Parameter primaryKeys: Primary keys identifying a table row.
+  /// - Returns: A delete statement filtered by the given keys.
+  public func find(_ primaryKeys: [some QueryExpression<From.TableColumns.PrimaryKey>]) -> Self {
+    guard !primaryKeys.isEmpty else { return self }
+    
+    var result = self
+    for (column, key) in zip(From.columns.primaryKeys, primaryKeys) {
+      let condition = column.eq(key)
+      result = result.where { _ in condition }
+    }
+    return result
+  }
+
+  /// A delete statement filtered by a primary key (for backward compatibility).
   ///
   /// - Parameter primaryKey: A primary key identifying a table row.
   /// - Returns: A delete statement filtered by the given key.
   public func find(_ primaryKey: some QueryExpression<From.TableColumns.PrimaryKey>) -> Self {
-    self.where { $0.primaryKey.eq(primaryKey) }
+    self.where { $0.primaryKeys.first!.eq(primaryKey) }
   }
 }
 
 extension Delete where From: TableDraft {
-  /// A delete statement filtered by a primary key.
+  /// A delete statement filtered by primary keys.
+  ///
+  /// - Parameter primaryKeys: Primary keys identifying a table row.
+  /// - Returns: A delete statement filtered by the given keys.
+  public func find(_ primaryKeys: [From.PrimaryTable.TableColumns.PrimaryKey.QueryOutput]) -> Self {
+    guard !primaryKeys.isEmpty else { return self }
+    
+    var result = self
+    for (column, key) in zip(From.PrimaryTable.columns.primaryKeys, primaryKeys) {
+      let condition = column.eq(
+        From.PrimaryTable.TableColumns.PrimaryKey(queryOutput: key)
+      )
+      result = result.where { _ in condition }
+    }
+    return result
+  }
+
+  /// A delete statement filtered by a primary key (for backward compatibility).
   ///
   /// - Parameter primaryKey: A primary key identifying a table row.
   /// - Returns: A delete statement filtered by the given key.
   public func find(_ primaryKey: From.PrimaryTable.TableColumns.PrimaryKey.QueryOutput) -> Self {
     self.where { _ in
-      From.PrimaryTable.columns.primaryKey.eq(
+      From.PrimaryTable.columns.primaryKeys.first!.eq(
         From.PrimaryTable.TableColumns.PrimaryKey(queryOutput: primaryKey)
       )
     }

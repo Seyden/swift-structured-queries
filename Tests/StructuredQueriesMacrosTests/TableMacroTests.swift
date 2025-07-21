@@ -46,6 +46,102 @@ extension SnapshotTests {
         }
         """#
       }
+
+        assertMacro {
+          """
+          @Table
+          struct Foo {
+            @Column(primaryKey: true)
+            var bar: Int
+          
+            @Column(primaryKey: true)
+            var abc: String
+          }
+          """
+        } expansion: {
+          #"""
+          struct Foo {
+            var bar: Int
+            var abc: String
+
+            public struct TableColumns: StructuredQueriesCore.TableDefinition, StructuredQueriesCore.PrimaryKeyedTableDefinition {
+              public typealias QueryValue = Foo
+              public let bar = StructuredQueriesCore.TableColumn<QueryValue, Int>("bar", keyPath: \QueryValue.bar)
+              public let abc = StructuredQueriesCore.TableColumn<QueryValue, String>("abc", keyPath: \QueryValue.abc)
+              public typealias PrimaryKey = Int
+              public var primaryKeys: [StructuredQueriesCore.TableColumn<QueryValue, Int>] {
+                [self.bar, self.abc]
+              }
+              public static var allColumns: [any StructuredQueriesCore.TableColumnExpression] {
+                [QueryValue.columns.bar, QueryValue.columns.abc]
+              }
+              public static var writableColumns: [any StructuredQueriesCore.WritableTableColumnExpression] {
+                [QueryValue.columns.bar, QueryValue.columns.abc]
+              }
+              public var queryFragment: QueryFragment {
+                "\(self.bar), \(self.abc)"
+              }
+            }
+
+            public struct Draft: StructuredQueriesCore.TableDraft {
+              public typealias PrimaryTable = Foo
+              var bar: Int?
+              var abc: String?
+              public struct TableColumns: StructuredQueriesCore.TableDefinition {
+                public typealias QueryValue = Draft
+                public let bar = StructuredQueriesCore.TableColumn<QueryValue, Int?>("bar", keyPath: \QueryValue.bar)
+                public let abc = StructuredQueriesCore.TableColumn<QueryValue, String?>("abc", keyPath: \QueryValue.abc)
+                public static var allColumns: [any StructuredQueriesCore.TableColumnExpression] {
+                  [QueryValue.columns.bar, QueryValue.columns.abc]
+                }
+                public static var writableColumns: [any StructuredQueriesCore.WritableTableColumnExpression] {
+                  [QueryValue.columns.bar, QueryValue.columns.abc]
+                }
+                public var queryFragment: QueryFragment {
+                  "\(self.bar), \(self.abc)"
+                }
+              }
+              public static let columns = TableColumns()
+
+              public static let tableName = Foo.tableName
+
+              public init(decoder: inout some StructuredQueriesCore.QueryDecoder) throws {
+                self.bar = try decoder.decode(Int.self)
+                self.abc = try decoder.decode(String.self)
+              }
+
+              public init(_ other: Foo) {
+                self.bar = other.bar
+                self.abc = other.abc
+              }
+              public init(
+                bar: Int? = nil,
+                abc: String? = nil
+              ) {
+                self.bar = bar
+                self.abc = abc
+              }
+            }
+          }
+
+          extension Foo: StructuredQueriesCore.Table, StructuredQueriesCore.PrimaryKeyedTable {
+            public static let columns = TableColumns()
+            public static let tableName = "foos"
+            public init(decoder: inout some StructuredQueriesCore.QueryDecoder) throws {
+              let bar = try decoder.decode(Int.self)
+              let abc = try decoder.decode(String.self)
+              guard let bar else {
+                throw QueryDecodingError.missingRequiredColumn
+              }
+              guard let abc else {
+                throw QueryDecodingError.missingRequiredColumn
+              }
+              self.bar = bar
+              self.abc = abc
+            }
+          }
+          """#
+        }
     }
 
     @Test func comment() {
@@ -76,8 +172,9 @@ extension SnapshotTests {
             public let id = StructuredQueriesCore.TableColumn<QueryValue, Int>("id", keyPath: \QueryValue.id)
             public let email = StructuredQueriesCore.TableColumn<QueryValue, String?>("email", keyPath: \QueryValue.email)
             public let age = StructuredQueriesCore.TableColumn<QueryValue, Int>("age", keyPath: \QueryValue.age)
-            public var primaryKey: StructuredQueriesCore.TableColumn<QueryValue, Int> {
-              self.id
+            public typealias PrimaryKey = Int
+            public var primaryKeys: [StructuredQueriesCore.TableColumn<QueryValue, Int>] {
+              [self.id]
             }
             public static var allColumns: [any StructuredQueriesCore.TableColumnExpression] {
               [QueryValue.columns.id, QueryValue.columns.email, QueryValue.columns.age]
@@ -661,8 +758,9 @@ extension SnapshotTests {
             public var generated: StructuredQueriesCore.GeneratedColumn<QueryValue, Int> {
               StructuredQueriesCore.GeneratedColumn<QueryValue, Int>("generated", keyPath: \QueryValue.generated)
             }
-            public var primaryKey: StructuredQueriesCore.TableColumn<QueryValue, Int> {
-              self.id
+            public typealias PrimaryKey = Int
+            public var primaryKeys: [StructuredQueriesCore.TableColumn<QueryValue, Int>] {
+              [self.id]
             }
             public static var allColumns: [any StructuredQueriesCore.TableColumnExpression] {
               [QueryValue.columns.id, QueryValue.columns.name, QueryValue.columns.generated]
@@ -981,8 +1079,9 @@ extension SnapshotTests {
             public typealias QueryValue = User
             public let id = StructuredQueriesCore.TableColumn<QueryValue, ID<User, UUID.BytesRepresentation>>("id", keyPath: \QueryValue.id)
             public let referrerID = StructuredQueriesCore.TableColumn<QueryValue, ID<User, UUID.BytesRepresentation>?>("referrerID", keyPath: \QueryValue.referrerID)
-            public var primaryKey: StructuredQueriesCore.TableColumn<QueryValue, ID<User, UUID.BytesRepresentation>> {
-              self.id
+            public typealias PrimaryKey = ID<User, UUID.BytesRepresentation>
+            public var primaryKeys: [StructuredQueriesCore.TableColumn<QueryValue, ID<User, UUID.BytesRepresentation>>] {
+              [self.id]
             }
             public static var allColumns: [any StructuredQueriesCore.TableColumnExpression] {
               [QueryValue.columns.id, QueryValue.columns.referrerID]
@@ -1118,8 +1217,9 @@ extension SnapshotTests {
             public typealias QueryValue = SyncUp
             public let id = StructuredQueriesCore.TableColumn<QueryValue, Int>("id", keyPath: \QueryValue.id)
             public let name = StructuredQueriesCore.TableColumn<QueryValue, String>("name", keyPath: \QueryValue.name)
-            public var primaryKey: StructuredQueriesCore.TableColumn<QueryValue, Int> {
-              self.id
+            public typealias PrimaryKey = Int
+            public var primaryKeys: [StructuredQueriesCore.TableColumn<QueryValue, Int>] {
+              [self.id]
             }
             public static var allColumns: [any StructuredQueriesCore.TableColumnExpression] {
               [QueryValue.columns.id, QueryValue.columns.name]
@@ -1232,8 +1332,9 @@ extension SnapshotTests {
             public typealias QueryValue = SyncUp
             public let id = StructuredQueriesCore.TableColumn<QueryValue, Int>("id", keyPath: \QueryValue.id)
             public let seconds = StructuredQueriesCore.TableColumn<QueryValue, <#Type#>>("seconds", keyPath: \QueryValue.seconds, default: 60 * 5)
-            public var primaryKey: StructuredQueriesCore.TableColumn<QueryValue, Int> {
-              self.id
+            public typealias PrimaryKey = Int
+            public var primaryKeys: [StructuredQueriesCore.TableColumn<QueryValue, Int>] {
+              [self.id]
             }
             public static var allColumns: [any StructuredQueriesCore.TableColumnExpression] {
               [QueryValue.columns.id, QueryValue.columns.seconds]
@@ -1326,8 +1427,9 @@ extension SnapshotTests {
             public let id = StructuredQueriesCore.TableColumn<QueryValue, Int>("id", keyPath: \QueryValue.id)
             public let color = StructuredQueriesCore.TableColumn<QueryValue, Color.HexRepresentation>("color", keyPath: \QueryValue.color, default: Color(red: 0x4a / 255, green: 0x99 / 255, blue: 0xef / 255))
             public let name = StructuredQueriesCore.TableColumn<QueryValue, Swift.String>("name", keyPath: \QueryValue.name, default: "")
-            public var primaryKey: StructuredQueriesCore.TableColumn<QueryValue, Int> {
-              self.id
+            public typealias PrimaryKey = Int
+            public var primaryKeys: [StructuredQueriesCore.TableColumn<QueryValue, Int>] {
+              [self.id]
             }
             public static var allColumns: [any StructuredQueriesCore.TableColumnExpression] {
               [QueryValue.columns.id, QueryValue.columns.color, QueryValue.columns.name]
@@ -1488,8 +1590,9 @@ extension SnapshotTests {
           public struct TableColumns: StructuredQueriesCore.TableDefinition, StructuredQueriesCore.PrimaryKeyedTableDefinition {
             public typealias QueryValue = Foo
             public let id = StructuredQueriesCore.TableColumn<QueryValue, Int>("id", keyPath: \QueryValue.id)
-            public var primaryKey: StructuredQueriesCore.TableColumn<QueryValue, Int> {
-              self.id
+            public typealias PrimaryKey = Int
+            public var primaryKeys: [StructuredQueriesCore.TableColumn<QueryValue, Int>] {
+              [self.id]
             }
             public static var allColumns: [any StructuredQueriesCore.TableColumnExpression] {
               [QueryValue.columns.id]
@@ -1661,8 +1764,9 @@ extension SnapshotTests {
             public typealias QueryValue = Foo
             public let id = StructuredQueriesCore.TableColumn<QueryValue, Int>("id", keyPath: \QueryValue.id)
             public let name = StructuredQueriesCore.TableColumn<QueryValue, String>("name", keyPath: \QueryValue.name)
-            public var primaryKey: StructuredQueriesCore.TableColumn<QueryValue, Int> {
-              self.id
+            public typealias PrimaryKey = Int
+            public var primaryKeys: [StructuredQueriesCore.TableColumn<QueryValue, Int>] {
+              [self.id]
             }
             public static var allColumns: [any StructuredQueriesCore.TableColumnExpression] {
               [QueryValue.columns.id, QueryValue.columns.name]
@@ -1766,8 +1870,9 @@ extension SnapshotTests {
             public let title = StructuredQueriesCore.TableColumn<QueryValue, Swift.String>("title", keyPath: \QueryValue.title, default: "")
             public let date = StructuredQueriesCore.TableColumn<QueryValue, Date.UnixTimeRepresentation?>("date", keyPath: \QueryValue.date)
             public let priority = StructuredQueriesCore.TableColumn<QueryValue, Priority?>("priority", keyPath: \QueryValue.priority)
-            public var primaryKey: StructuredQueriesCore.TableColumn<QueryValue, Int> {
-              self.id
+            public typealias PrimaryKey = Int
+            public var primaryKeys: [StructuredQueriesCore.TableColumn<QueryValue, Int>] {
+              [self.id]
             }
             public static var allColumns: [any StructuredQueriesCore.TableColumnExpression] {
               [QueryValue.columns.id, QueryValue.columns.title, QueryValue.columns.date, QueryValue.columns.priority]
@@ -1868,8 +1973,9 @@ extension SnapshotTests {
           public struct TableColumns: StructuredQueriesCore.TableDefinition, StructuredQueriesCore.PrimaryKeyedTableDefinition {
             public typealias QueryValue = Reminder
             public let id = StructuredQueriesCore.TableColumn<QueryValue, UUID.BytesRepresentation>("id", keyPath: \QueryValue.id)
-            public var primaryKey: StructuredQueriesCore.TableColumn<QueryValue, UUID.BytesRepresentation> {
-              self.id
+            public typealias PrimaryKey = UUID.BytesRepresentation
+            public var primaryKeys: [StructuredQueriesCore.TableColumn<QueryValue, UUID.BytesRepresentation>] {
+              [self.id]
             }
             public static var allColumns: [any StructuredQueriesCore.TableColumnExpression] {
               [QueryValue.columns.id]
@@ -1995,8 +2101,9 @@ extension SnapshotTests {
             public typealias QueryValue = Reminder
             public let id = StructuredQueriesCore.TableColumn<QueryValue, Int?>("id", keyPath: \QueryValue.id)
             public let title = StructuredQueriesCore.TableColumn<QueryValue, Swift.String>("title", keyPath: \QueryValue.title, default: "")
-            public var primaryKey: StructuredQueriesCore.TableColumn<QueryValue, Int?> {
-              self.id
+            public typealias PrimaryKey = Int?
+            public var primaryKeys: [StructuredQueriesCore.TableColumn<QueryValue, Int?>] {
+              [self.id]
             }
             public static var allColumns: [any StructuredQueriesCore.TableColumnExpression] {
               [QueryValue.columns.id, QueryValue.columns.title]

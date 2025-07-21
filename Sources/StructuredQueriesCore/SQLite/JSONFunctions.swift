@@ -179,12 +179,15 @@ extension PrimaryKeyedTableDefinition where QueryValue: _OptionalProtocol & Coda
     filter: (some QueryExpression<Bool>)? = Bool?.none
   ) -> some QueryExpression<[Wrapped].JSONRepresentation>
   where QueryValue == Wrapped? {
-    let filterQueryFragment =
-      if let filter {
-        self.primaryKey.isNot(nil).and(filter).queryFragment
-      } else {
-        self.primaryKey.isNot(nil).queryFragment
-      }
+    let filterQueryFragment: QueryFragment
+    if let filter {
+      let primaryKeyFragments = self.primaryKeys.map { $0.isNot(nil).queryFragment }
+      let allFragments = [filter.queryFragment] + primaryKeyFragments
+      filterQueryFragment = allFragments.joined(separator: " AND ")
+    } else {
+      let primaryKeyFragments = self.primaryKeys.map { $0.isNot(nil).queryFragment }
+      filterQueryFragment = primaryKeyFragments.isEmpty ? "1" : primaryKeyFragments.joined(separator: " AND ")
+    }
     return AggregateFunction(
       "json_group_array",
       isDistinct: isDistinct,
@@ -240,8 +243,10 @@ extension PrimaryKeyedTableDefinition {
     let fragment: QueryFragment = Self.allColumns
       .map { open($0) }
       .joined(separator: ", ")
+    let primaryKeyFragments = primaryKeys.map { $0.isNot(nil).queryFragment }
+    let condition = primaryKeyFragments.isEmpty ? "1" : primaryKeyFragments.joined(separator: " AND ")
     return SQLQueryExpression(
-      "CASE WHEN \(primaryKey.isNot(nil)) THEN json_object(\(fragment)) END"
+      "CASE WHEN \(condition) THEN json_object(\(fragment)) END"
     )
   }
 }

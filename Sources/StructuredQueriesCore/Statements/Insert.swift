@@ -855,13 +855,19 @@ extension PrimaryKeyedTable {
     or conflictResolution: ConflictResolution? = nil,
     @InsertValuesBuilder<Draft> values: () -> [Draft]
   ) -> InsertOf<Self> {
-    insert(
+    // TODO: Support multiple primary keys in conflict resolution
+    // Currently only using the first primary key due to generic constraint limitations
+    guard let firstPrimaryKey = Self.columns.primaryKeys.first else {
+      fatalError("No primary keys found for table")
+    }
+    
+    return insert(
       or: conflictResolution,
       values: values,
-      onConflict: { $0.primaryKey },
+      onConflict: { _ in (firstPrimaryKey) },
       doUpdate: { updates, _ in
         for (column, excluded) in zip(Draft.TableColumns.writableColumns, Excluded.writableColumns)
-        where column.name != columns.primaryKey.name {
+        where !Self.columns.primaryKeys.contains(where: { $0.name == column.name }) {
           updates.set(column, excluded.queryFragment)
         }
       }

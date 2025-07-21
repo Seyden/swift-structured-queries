@@ -39,13 +39,12 @@ extension TableMacro: ExtensionMacro {
 
     var draftProperties: [DeclSyntax] = []
     var draftTableType: TypeSyntax?
-    var primaryKey:
-      (
-        identifier: TokenSyntax,
-        label: TokenSyntax?,
-        queryOutputType: TypeSyntax?,
-        queryValueType: TypeSyntax?
-      )?
+    var primaryKeys: [(
+      identifier: TokenSyntax,
+      label: TokenSyntax?,
+      queryOutputType: TypeSyntax?,
+      queryValueType: TypeSyntax?
+    )] = []
     let selfRewriter = SelfRewriter(
       selfEquivalent: type.as(IdentifierTypeSyntax.self)?.name ?? "QueryValue"
     )
@@ -118,7 +117,7 @@ extension TableMacro: ExtensionMacro {
         ?? binding.initializer?.value.literalType)
         .map { $0.rewritten(selfRewriter) }
       var columnQueryOutputType = columnQueryValueType
-      var isPrimaryKey = primaryKey == nil && identifier.text == "id"
+      var isPrimaryKey = primaryKeys.isEmpty && identifier.text == "id"
       var isEphemeral = false
       var isGenerated = false
 
@@ -174,38 +173,13 @@ extension TableMacro: ExtensionMacro {
               isPrimaryKey = false
               break
             }
-            if let primaryKey, let originalLabel = primaryKey.label {
-              var newArguments = arguments
-              newArguments.remove(at: argumentIndex)
-              diagnostics.append(
-                Diagnostic(
-                  node: label,
-                  message: MacroExpansionErrorMessage(
-                    "'@Table' only supports a single primary key"
-                  ),
-                  notes: [
-                    Note(
-                      node: Syntax(originalLabel),
-                      position: originalLabel.position,
-                      message: MacroExpansionNoteMessage(
-                        "Primary key already applied to '\(primaryKey.identifier)'"
-                      )
-                    )
-                  ],
-                  fixIt: .replace(
-                    message: MacroExpansionFixItMessage("Remove 'primaryKey: true'"),
-                    oldNode: Syntax(attribute),
-                    newNode: Syntax(attribute.with(\.arguments, .argumentList(newArguments)))
-                  )
-                )
-              )
-            }
-            primaryKey = (
+            // Allow multiple primary keys - no need to reject duplicates
+            primaryKeys.append((
               identifier: identifier,
               label: label,
               queryOutputType: columnQueryOutputType,
               queryValueType: columnQueryValueType
-            )
+            ))
 
           case .some(let label) where label.text == "generated":
             guard
@@ -245,17 +219,17 @@ extension TableMacro: ExtensionMacro {
       else { continue }
 
       if isPrimaryKey {
-        primaryKey = (
+        primaryKeys.append((
           identifier: identifier,
           label: nil,
           queryOutputType: columnQueryOutputType,
           queryValueType: columnQueryValueType
-        )
+        ))
       }
 
       if !isGenerated {
         // NB: A compiler bug prevents us from applying the '@_Draft' macro directly
-        draftBindings.append((binding, columnQueryOutputType, identifier == primaryKey?.identifier))
+        draftBindings.append((binding, columnQueryOutputType, primaryKeys.contains(where: { $0.identifier == identifier })))
         // NB: End of workaround
       }
 
@@ -334,7 +308,7 @@ extension TableMacro: ExtensionMacro {
       }
 
       if !isGenerated {
-        if let primaryKey, primaryKey.identifier == identifier {
+        if primaryKeys.contains(where: { $0.identifier == identifier }) {
           var hasColumnAttribute = false
           var property = property
           for attributeIndex in property.attributes.indices {
@@ -420,13 +394,38 @@ extension TableMacro: ExtensionMacro {
         \(allColumns.map { "self.\($0) = other.\($0)" as ExprSyntax }, separator: "\n")
         }
         """
-    } else if let primaryKey {
-      columnsProperties.append(
-        """
-        public var primaryKey: \(moduleName).TableColumn<QueryValue, \(primaryKey.queryValueType)> \
-        { self.\(primaryKey.identifier) }
-        """
-      )
+    } else if !primaryKeys.isEmpty {
+      // Generate primaryKeys array property with correct types for each primary key
+      let primaryKeyColumns = primaryKeys.map { pk in
+        "self.\(pk.identifier)" as ExprSyntax
+      }
+      
+      // Generate primary keys with their actual types
+      let firstType = primaryKeys.first!.queryValueType
+      let allSameType = primaryKeys.allSatisfy { $0.queryValueType?.trimmedDescription == firstType?.trimmedDescription }
+      
+      if allSameType {
+        // All primary keys have the same type - use the actual type
+        columnsProperties.append(
+          """
+          public typealias PrimaryKey = \(firstType)
+          public var primaryKeys: [\(moduleName).TableColumn<QueryValue, \(firstType)>] \
+          { [\(primaryKeyColumns, separator: ", ")] }
+          """
+        )
+      } else {
+        // Heterogeneous primary keys - use type erasure for the main array
+        // This allows each primary key to maintain its actual type
+        columnsProperties.append(
+          """
+          public typealias PrimaryKey = \(firstType)
+          public var primaryKeys: [any \(moduleName).TableColumn<QueryValue, any \(moduleName).QueryBindable>] \
+          { [\(primaryKeyColumns, separator: ", ")] }
+          """
+        )
+      }
+      
+
       draft = """
 
         @_Draft(\(type).self)
@@ -533,9 +532,9 @@ extension TableMacro: ExtensionMacro {
 
     var conformances: [TypeSyntax] = []
     let protocolNames: [TokenSyntax] =
-      primaryKey != nil
-      ? ["Table", "PrimaryKeyedTable"]
-      : ["Table"]
+      primaryKeys.isEmpty
+      ? ["Table"]
+      : ["Table", "PrimaryKeyedTable"]
     if let inheritanceClause = declaration.inheritanceClause {
       for type in protocolNames {
         if !inheritanceClause.inheritedTypes.contains(where: {
@@ -638,13 +637,12 @@ extension TableMacro: MemberMacro {
     // NB: End of workaround
 
     var draftProperties: [DeclSyntax] = []
-    var primaryKey:
-      (
-        identifier: TokenSyntax,
-        label: TokenSyntax?,
-        queryOutputType: TypeSyntax?,
-        queryValueType: TypeSyntax?
-      )?
+    var primaryKeys: [(
+      identifier: TokenSyntax,
+      label: TokenSyntax?,
+      queryOutputType: TypeSyntax?,
+      queryValueType: TypeSyntax?
+    )] = []
     let selfRewriter = SelfRewriter(selfEquivalent: type.name)
     for member in declaration.memberBlock.members {
       guard
@@ -664,7 +662,7 @@ extension TableMacro: MemberMacro {
         ?? binding.initializer?.value.literalType)
         .map { $0.rewritten(selfRewriter) }
       var columnQueryOutputType = columnQueryValueType
-      var isPrimaryKey = primaryKey == nil && identifier.text == "id"
+      var isPrimaryKey = primaryKeys.isEmpty && identifier.text == "id"
       var isEphemeral = false
       var isGenerated = false
 
@@ -710,17 +708,17 @@ extension TableMacro: MemberMacro {
               isPrimaryKey = false
               break
             }
-            if primaryKey != nil {
+            if primaryKeys.contains(where: { $0.identifier == identifier }) {
               var newArguments = arguments
               newArguments.remove(at: argumentIndex)
               expansionFailed = true
             }
-            primaryKey = (
+            primaryKeys.append((
               identifier: identifier,
               label: label,
               queryOutputType: columnQueryOutputType,
               queryValueType: columnQueryValueType
-            )
+            ))
 
           case .some(let label) where label.text == "generated":
             guard
@@ -739,19 +737,19 @@ extension TableMacro: MemberMacro {
       else { continue }
 
       if isPrimaryKey {
-        primaryKey = (
+        primaryKeys.append((
           identifier: identifier,
           label: nil,
           queryOutputType: columnQueryOutputType,
           queryValueType: columnQueryValueType
-        )
+        ))
       }
 
       selectedColumns.append(identifier)
 
       if !isGenerated {
         // NB: A compiler bug prevents us from applying the '@_Draft' macro directly
-        draftBindings.append((binding, columnQueryOutputType, identifier == primaryKey?.identifier))
+        draftBindings.append((binding, columnQueryOutputType, primaryKeys.contains(where: { $0.identifier == identifier })))
         // NB: End of workaround
       }
 
@@ -833,7 +831,7 @@ extension TableMacro: MemberMacro {
       }
 
       if !isGenerated {
-        if let primaryKey, primaryKey.identifier == identifier {
+        if primaryKeys.contains(where: { $0.identifier == identifier }) {
           var hasColumnAttribute = false
           var property = property
           for attributeIndex in property.attributes.indices {
@@ -912,13 +910,36 @@ extension TableMacro: MemberMacro {
     }
 
     var draft: DeclSyntax?
-    if let primaryKey {
-      columnsProperties.append(
-        """
-        public var primaryKey: \(moduleName).TableColumn<QueryValue, \(primaryKey.queryValueType)> \
-        { self.\(primaryKey.identifier) }
-        """
-      )
+    if !primaryKeys.isEmpty {
+      // Generate primaryKeys array property with correct types for each primary key
+      let primaryKeyColumns = primaryKeys.map { pk in
+        "self.\(pk.identifier)" as ExprSyntax
+      }
+      
+      // Generate primary keys with their actual types
+      let firstType = primaryKeys.first!.queryValueType
+      let allSameType = primaryKeys.allSatisfy { $0.queryValueType?.trimmedDescription == firstType?.trimmedDescription }
+      
+      if allSameType {
+        // All primary keys have the same type - use the actual type
+        columnsProperties.append(
+          """
+          public typealias PrimaryKey = \(firstType)
+          public var primaryKeys: [\(moduleName).TableColumn<QueryValue, \(firstType)>] \
+          { [\(primaryKeyColumns, separator: ", ")] }
+          """
+        )
+      } else {
+        // Heterogeneous primary keys - use type erasure for the main array
+        // This allows each primary key to maintain its actual type
+        columnsProperties.append(
+          """
+          public typealias PrimaryKey = \(firstType)
+          public var primaryKeys: [any \(moduleName).TableColumn<QueryValue, any \(moduleName).QueryBindable>] \
+          { [\(primaryKeyColumns, separator: ", ")] }
+          """
+        )
+      }
       draft = """
 
         @_Draft(\(type).self)
@@ -985,13 +1006,13 @@ extension TableMacro: MemberMacro {
 
     var conformances: [TypeSyntax] = []
     let protocolNames: [TokenSyntax] =
-      primaryKey != nil
-      ? ["Table", "PrimaryKeyedTable"]
-      : ["Table"]
+      primaryKeys.isEmpty
+      ? ["Table"]
+      : ["Table", "PrimaryKeyedTable"]
     let schemaConformances: [ExprSyntax] =
-      primaryKey != nil
-      ? ["\(moduleName).TableDefinition", "\(moduleName).PrimaryKeyedTableDefinition"]
-      : ["\(moduleName).TableDefinition"]
+      primaryKeys.isEmpty
+      ? ["\(moduleName).TableDefinition"]
+      : ["\(moduleName).TableDefinition", "\(moduleName).PrimaryKeyedTableDefinition"]
     if let inheritanceClause = declaration.inheritanceClause {
       for type in protocolNames {
         if !inheritanceClause.inheritedTypes.contains(where: {

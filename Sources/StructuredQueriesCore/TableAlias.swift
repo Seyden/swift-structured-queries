@@ -176,8 +176,13 @@ extension TableAlias.TableColumns: PrimaryKeyedTableDefinition
 where Base.TableColumns: PrimaryKeyedTableDefinition {
   public typealias PrimaryKey = Base.TableColumns.PrimaryKey
 
-  public var primaryKey: TableColumn<TableAlias, Base.TableColumns.PrimaryKey.QueryValue> {
-    self[dynamicMember: \.primaryKey]
+  public var primaryKeys: [TableColumn<TableAlias, Base.TableColumns.PrimaryKey.QueryValue>] {
+    Base.columns.primaryKeys.map { column in
+      TableColumn<TableAlias, Base.TableColumns.PrimaryKey.QueryValue>(
+        column.name,
+        keyPath: \.[member: \Base.TableColumns.PrimaryKey.QueryValue.self, column: column._keyPath]
+      )
+    }
   }
 }
 

@@ -137,8 +137,13 @@ extension Optional.TableColumns: PrimaryKeyedTableDefinition
 where Wrapped.TableColumns: PrimaryKeyedTableDefinition {
   public typealias PrimaryKey = Wrapped.TableColumns.PrimaryKey?
 
-  public var primaryKey: TableColumn<Optional, Wrapped.TableColumns.PrimaryKey.QueryValue?> {
-    self[dynamicMember: \.primaryKey]
+  public var primaryKeys: [TableColumn<Optional, Wrapped.TableColumns.PrimaryKey.QueryValue?>] {
+    Wrapped.columns.primaryKeys.map { column in
+      TableColumn<Optional, Wrapped.TableColumns.PrimaryKey.QueryValue?>(
+        column.name,
+        keyPath: \.[member: \Wrapped.TableColumns.PrimaryKey.QueryValue.self, column: column._keyPath]
+      )
+    }
   }
 }
 

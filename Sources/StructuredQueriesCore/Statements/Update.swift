@@ -67,8 +67,8 @@ extension PrimaryKeyedTable {
     or conflictResolution: ConflictResolution? = nil,
     _ row: Self
   ) -> UpdateOf<Self> {
-    update(or: conflictResolution) { updates in
-      for column in TableColumns.writableColumns where column.name != columns.primaryKey.name {
+    var updateStatement = update(or: conflictResolution) { updates in
+      for column in TableColumns.writableColumns where !Self.columns.primaryKeys.contains(where: { $0.name == column.name }) {
         func open<Root, Value>(_ column: some WritableTableColumnExpression<Root, Value>) {
           updates.set(
             column,
@@ -78,9 +78,13 @@ extension PrimaryKeyedTable {
         open(column)
       }
     }
-    .where {
-      $0.primaryKey.eq(TableColumns.PrimaryKey(queryOutput: row[keyPath: $0.primaryKey.keyPath]))
+    
+    for (column, value) in zip(Self.columns.primaryKeys, row.primaryKeys) {
+      let condition = column.eq(TableColumns.PrimaryKey(queryOutput: value))
+      updateStatement = updateStatement.where { _ in condition }
     }
+    
+    return updateStatement
   }
 }
 
